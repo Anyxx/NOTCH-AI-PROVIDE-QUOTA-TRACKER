@@ -2,7 +2,10 @@
 //! persisted for this user on this machine), never in config.json: that file is plain text in
 //! %APPDATA% and gets copied around with logs when someone asks for help.
 
+/// The single key earlier builds saved; moved into COMMANDCODE_ACCOUNTS the first time it is read
 pub const COMMANDCODE: &str = "codenotch:commandcode";
+/// Every Command Code account saved from the API-keys window, as JSON `[{id,label,key}]`
+pub const COMMANDCODE_ACCOUNTS: &str = "codenotch:commandcode-accounts";
 pub const ROUTER9_TOKEN: &str = "codenotch:router9-token";
 /// Not a secret, but kept beside its token rather than in config.json: that file is rewritten whole
 /// from each process's in-memory copy (drag, tray toggles, language), and a URL saved from the

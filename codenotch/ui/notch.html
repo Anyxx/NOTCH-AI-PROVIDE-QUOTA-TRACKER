@@ -82,9 +82,6 @@
     transform-origin:center top;transform:translateX(-50%) scale(.28);
   }
   #root[data-state="open"][data-mode="free"] #pill{transform:translateX(-50%) scale(1)}
-  /* Squash while being dragged: the island leans into the motion instead of sliding rigidly */
-  #root[data-drag="1"][data-mode="free"] #pill{transform:translateX(-50%) scale(1.05,.93)}
-  #root[data-drag="1"] #handle{background:rgba(230,230,235,.7)}
 
   /* Fillets: the concave arcs between the pill's top/bottom and the screen edge (the inverse rounded
      corner in the upstream design frame). An R×R black square hugs the edge and a radial gradient
@@ -110,6 +107,37 @@
     left:0;bottom:calc(-1 * var(--fillet));
     background:radial-gradient(circle at 100% 100%, transparent calc(var(--fillet) - 1.5px), var(--stroke) calc(var(--fillet) - 0.5px), var(--ink) calc(var(--fillet) + 0.5px));
   }
+
+  /* ---------- Dragging: the notch travels as a drop of ink ----------
+     The edge-welded pill (fillets and all) looked like a cut-out sticker once pulled off its edge, so
+     while dragged everything else is hidden and a round drop takes its place: it stretches along the
+     direction of travel, its outline ripples through a turbulence displacement that grows with speed,
+     and on release it flattens against the edge it lands on before the handle takes over. The filter
+     only runs while dragging — nothing references it otherwise. */
+  #blob{
+    position:absolute;left:50%;top:50%;width:56px;height:56px;margin:-28px 0 0 -28px;border-radius:50%;
+    background:radial-gradient(circle at 34% 30%, #3b3b42 0%, #121214 46%, #000 74%);
+    box-shadow:0 0 0 1px var(--stroke), 0 10px 24px rgba(0,0,0,.45);
+    opacity:0;pointer-events:none;transform:scale(.3);
+    transition:opacity .16s linear, transform .4s var(--spring);
+  }
+  #blob .rim{position:absolute;inset:4px;border-radius:50%;border:2px solid var(--tint,#00FF88);opacity:.85}
+  #blob .shine{position:absolute;left:15px;top:11px;width:15px;height:8px;border-radius:50%;background:rgba(255,255,255,.2);filter:blur(1px)}
+  #root[data-drag="1"] #blob{
+    opacity:1;filter:url(#liquid);
+    /* rotate · stretch · rotate back: a stretch along the direction of travel, whatever it is */
+    transform:rotate(var(--ang,0rad)) scale(calc(1 + var(--st,0)), calc(1 - var(--st,0) * .55)) rotate(calc(var(--ang,0rad) * -1));
+    transition:opacity .16s linear, transform .14s linear;
+  }
+  #root[data-drag="1"] #pill,#root[data-drag="1"] #handle,#root[data-drag="1"] #card{opacity:0!important;pointer-events:none!important;transition:opacity .08s linear}
+  /* Landing: the drop flattens against the edge it is gliding onto */
+  #root[data-drag="1"][data-land] #blob{transition:opacity .16s linear, transform .24s var(--ease)}
+  #root[data-drag="1"][data-land="right"]  #blob{transform-origin:100% 50%;transform:scale(.4,1.4)}
+  #root[data-drag="1"][data-land="left"]   #blob{transform-origin:0 50%;transform:scale(.4,1.4)}
+  #root[data-drag="1"][data-land="top"]    #blob{transform-origin:50% 0;transform:scale(1.4,.4)}
+  #root[data-drag="1"][data-land="bottom"] #blob{transform-origin:50% 100%;transform:scale(1.4,.4)}
+  #root[data-drag="1"][data-land="free"]   #blob{transform:scale(1.7,.28)}
+  #root[data-land=""] #blob{transform-origin:50% 50%}
 
   /* ---------- Cells ---------- */
   .cell{
@@ -175,8 +203,9 @@
   .c-sessions{margin-top:12px;border-top:1px solid #1e1e1e;padding-top:8px}
   .s-row{display:flex;align-items:center;gap:6px;font-size:11px;color:#b0b0b3;padding:2px 0}
   .s-dot{width:6px;height:6px;border-radius:3px;flex:0 0 auto}
-  /* Quota Tracker layout (9Router): a block per account, a compact row per quota. Several accounts
-     outgrow any window, so this card scrolls — the wheel reaches an unfocused window on Windows 10+. */
+  /* Quota Tracker layout (9Router, several Command Code accounts): a block per account, a compact row
+     per quota. Several accounts outgrow any window, so this card scrolls — the wheel reaches an
+     unfocused window on Windows 10+. */
   #card.scroll{overflow-y:auto;scrollbar-width:thin;scrollbar-color:#333 transparent}
   #card.scroll::-webkit-scrollbar{width:6px}
   #card.scroll::-webkit-scrollbar-thumb{background:#333;border-radius:3px}
@@ -204,10 +233,20 @@
 </style>
 </head>
 <body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <!-- The drop's ripple: animated fractal noise displacing its outline; the scale is raised with speed -->
+  <filter id="liquid" x="-40%" y="-40%" width="180%" height="180%">
+    <feTurbulence type="fractalNoise" baseFrequency="0.022" numOctaves="2" seed="7" result="noise">
+      <animate attributeName="baseFrequency" dur="1.4s" values="0.018;0.034;0.018" repeatCount="indefinite"/>
+    </feTurbulence>
+    <feDisplacementMap id="liquidDisp" in="SourceGraphic" in2="noise" scale="7" xChannelSelector="R" yChannelSelector="G"/>
+  </filter>
+</svg>
 <div id="root" data-edge="right" data-mode="dock" data-state="idle">
   <div id="card"></div>
   <div id="handle"></div><!-- the resting state: a slim capsule at the edge, like the iOS home indicator -->
   <div id="pill"></div><!-- one .cell per provider (column on a side edge, row as an island) -->
+  <div id="blob"><div class="rim"></div><div class="shine"></div></div><!-- what is carried while dragging -->
   <div id="notice"></div>
 </div>
 <script>
@@ -231,13 +270,18 @@ let activity=[]; // working state of the non-Claude providers: {provider,state:'
 
 const root=document.getElementById('root'), card=document.getElementById('card');
 const pill=document.getElementById('pill'), handle=document.getElementById('handle');
+const blob=document.getElementById('blob'), liquidDisp=document.getElementById('liquidDisp');
 
 /* ---------- Open / closed ----------
    The window itself resizes with the state (Rust side): an always-on-top window eats clicks over its
    whole rectangle, so a notch that is "hidden" but still 340 px wide would quietly block the desktop.
    Closed it is only the handle; opening grows the window first, then the pill springs out into it. */
 const OPEN_MS=420, CLOSE_MS=240;
+const BALL=84; // mirrors main.rs BALL: the window's logical side while dragging
 let state='idle', pendingShrink=null;
+// Declared up here, not beside the drag code: designWidth() reads it during the very first reportDpr(),
+// and a `let` further down is still in its temporal dead zone then — the read throws and the script dies.
+let press=null, dragging=false;
 function isIsland(){ return cfg.drag_enabled || cfg.edge==='top' || cfg.edge==='bottom'; }
 function openNotch(){
   clearTimeout(pendingShrink); clearTimeout(dwellTimer);
@@ -309,6 +353,7 @@ function svgArc(r,frac,color,width,extra=''){
 
 /* The handle carries the one number that matters while closed: it takes the colour of the most
    constrained provider, so a glance at the edge still says "you are fine" or "you are nearly out". */
+let worstTone=null;
 function tintHandle(){
   let worst=null;
   for(const p of providers()){
@@ -316,7 +361,8 @@ function tintHandle(){
     if(h&&h.count==null&&(worst==null||h.used>worst)) worst=h.used;
   }
   const anyWorking=providers().some(p=>workState(p.id)==='running');
-  handle.style.background = worst==null ? 'rgba(230,230,235,.34)' : tone(worst);
+  worstTone = worst==null ? null : tone(worst);
+  handle.style.background = worstTone || 'rgba(230,230,235,.34)';
   handle.style.opacity = state==='open' ? '' : (anyWorking?'.95':'.62');
 }
 
@@ -371,9 +417,9 @@ function ago(ms){
 
 const STATE_DOT={running:RUNGREEN,attention:AMBER,done:'#57c7ff'};
 
-/* Quota Tracker card (9Router): one block per account, rows as the dashboard shows them — the share
-   *left*, a bar of the same length, and the countdown. The ring keeps the notch's own convention
-   (share *used*), which is why the card says "left" out loud. */
+/* Per-account card (9Router, several Command Code accounts): one block per account, rows as the
+   dashboard shows them — the share *left*, a bar of the same length, and the countdown. The ring
+   keeps the notch's own convention (share *used*), which is why the card says "left" out loud. */
 const QUOTA_GLYPH={claude:'claude',codex:'codex',antigravity:'gemini',cursor:'cursor'};
 function soonCopy(ms){
   if(!ms) return '';
@@ -414,7 +460,7 @@ function renderCard(){
   if(staleOf(snap)&&snap.fetched_at) html+=`<div class="c-sub">Updated ${ago(snap.fetched_at)}</div>`;
   if(snap.status==='needsAuth'){
     const who={claude:'Sign in to Claude Code to see usage.',cursor:'Sign in to Cursor to see usage.',codex:'Sign in to Codex to see usage.',gemini:'Sign in to Antigravity to see usage.',commandcode:'Add a Command Code API key to see usage.',router9:'Connect 9Router to see usage.'}[p.id]||'';
-    html+=`<div class="c-note">${who}<br>${snap.note||''}</div>`;
+    html+=`<div class="c-note">${who}<br>${esc(snap.note||'')}</div>`;
     // The notch cannot take keyboard focus, so the key is typed in the API-keys window instead
     if(p.id==='commandcode'||p.id==='router9')
       html+=`<button onclick="invoke('open_settings')" style="margin-top:10px;font:600 12px 'Segoe UI',system-ui,sans-serif;background:#ececf0;color:#0b0b0d;border:0;border-radius:8px;padding:7px 12px;cursor:pointer">Add API key…</button>`;
@@ -423,21 +469,21 @@ function renderCard(){
     html+=renderGroups(snap.groups);
     if(snap.note) html+=`<div class="c-note">${esc(snap.note)}</div>`;
   }else if(!snap.windows.length){
-    html+=`<div class="c-note">${snap.note||'Waiting for first reading…'}</div>`;
+    html+=`<div class="c-note">${esc(snap.note||'Waiting for first reading…')}</div>`;
   }else{
     for(const w of snap.windows){
       if(w.count!=null){
-        html+=`<div class="win"><div class="w-row"><span class="w-label">${w.label}</span></div>
+        html+=`<div class="win"><div class="w-row"><span class="w-label">${esc(w.label)}</span></div>
           <div class="w-used">${w.count>0?`~${w.count} request${w.count===1?'':'s'} today`:'no requests today'}</div></div>`;
         continue;
       }
       html+=`<div class="win">
-        <div class="w-row"><span class="w-label">${w.label}</span><span class="w-reset">${resetCopy(w.resets_at)}</span></div>
+        <div class="w-row"><span class="w-label">${esc(w.label)}</span><span class="w-reset">${resetCopy(w.resets_at)}</span></div>
         <div class="w-track"><div class="w-fill" style="width:${(Math.min(w.used,1)*100).toFixed(0)}%;background:${tone(w.used)}"></div></div>
         <div class="w-used">${w.derived?'~':''}${Math.round(w.used*100)}% Used</div>
       </div>`;
     }
-    if(snap.note) html+=`<div class="c-note">${snap.note}</div>`;
+    if(snap.note) html+=`<div class="c-note">${esc(snap.note)}</div>`;
   }
   if(p.id==='claude'){ // live sessions (a full list with jump-to-session is a follow-up)
     const act=stateSnap.sessions.filter(s=>s.state!=='idle');
@@ -509,10 +555,11 @@ function armWatchdog(){
     callq('set_expanded',{on:true,rects:[rectOf(pill),rectOf(card)]}).catch(()=>{});
   });
 }
-/* Design width for the current mode, mirroring the Rust constants (NOTCH_W / ISLAND_W / HANDLE_*).
+/* Design width for the current mode, mirroring the Rust constants (NOTCH_W / ISLAND_W / HANDLE_* / BALL).
    Deliberately *unscaled*: the window is sized scale× larger on the Rust side, so the leftover
    mismatch measured here is exactly the user's size setting and fitZoom turns it into content zoom. */
 function designWidth(){
+  if(dragging) return BALL;
   if(state!=='open') return isIsland()?132:18;
   return isIsland()?560:340;
 }
@@ -581,17 +628,28 @@ listen('pointer_left',()=>{clearTimeout(hideTimer);hideCard();closeNotch();}).ca
 // Card content changes change its height -> report the hot rectangles again
 listen('usage',()=>{if(card.classList.contains('show'))armWatchdog();}).catch(()=>{});
 listen('state',()=>{if(card.classList.contains('show'))armWatchdog();}).catch(()=>{});
-/* Press and move more than 4 px = drag (handed to Rust, which follows the system cursor); released on
-   a side it snaps to that edge, or stays put in island mode. A press without movement opens the notch
-   (closed) or the provider's usage page (open). */
-let press=null, dragging=false;
+
+/* ---------- Drag ----------
+   Press and move more than 4 px = drag. The notch is picked up as a drop: the card and pill go, the
+   window shrinks to the ball (Rust), and Rust follows the system cursor, streaming its velocity here
+   so the drop stretches along its path and ripples harder the faster it moves. On release it glides
+   to the nearest edge (or stays put in island mode), flattens against it, and the handle returns.
+   A press without movement opens the notch (closed) or the provider's usage page (open). */
 function beginPress(e){ if(e.button!==0)return; press={x:e.clientX,y:e.clientY,id:cellAt(e.clientX,e.clientY)||hoverId}; }
 pill.addEventListener('mousedown',beginPress);
 handle.addEventListener('mousedown',beginPress);
 document.addEventListener('mousemove',e=>{
   if(!press||dragging)return;
   if(Math.abs(e.clientY-press.y)>4||Math.abs(e.clientX-press.x)>4){
-    dragging=true; root.dataset.drag='1'; clearTimeout(hideTimer); clearTimeout(dwellTimer); dwellTimer=null; hideCard();
+    dragging=true;
+    clearTimeout(hideTimer); clearTimeout(dwellTimer); dwellTimer=null; clearTimeout(pendingShrink);
+    hideCard();
+    // Straight to closed, without closeNotch's delayed shrink — Rust sizes the window for the ball
+    state='idle'; root.dataset.state='idle';
+    blob.style.setProperty('--tint', worstTone||'#8a8a93');
+    blob.style.setProperty('--st','0');
+    root.dataset.land='';
+    root.dataset.drag='1';
     invoke('drag_begin').catch(err=>{notice('drag_begin failed: '+err);dragging=false;root.dataset.drag='0';});
   }
 });
@@ -603,7 +661,26 @@ document.addEventListener('mouseup',e=>{
   }
   press=null;
 });
-listen('drag_end',()=>{dragging=false;root.dataset.drag='0';press=null;}).catch(()=>{});
+listen('drag_motion',e=>{
+  if(!dragging) return;
+  const {vx=0,vy=0}=e.payload||{};
+  const speed=Math.hypot(vx,vy);
+  blob.style.setProperty('--ang', Math.atan2(vy,vx).toFixed(3)+'rad');
+  blob.style.setProperty('--st', Math.min(speed/2600,.34).toFixed(3));
+  liquidDisp.setAttribute('scale', (7+Math.min(speed/160,14)).toFixed(1));
+}).catch(()=>{});
+listen('drag_land',e=>{
+  blob.style.setProperty('--st','0');
+  liquidDisp.setAttribute('scale','5');
+  root.dataset.land=(e.payload&&e.payload.edge)||'free';
+}).catch(()=>{});
+listen('drag_end',()=>{
+  // Rust emits this just before it resizes the window back to the handle, so the resize that follows
+  // is measured against the handle's design width rather than the ball's
+  dragging=false; press=null;
+  root.dataset.drag='0';
+  root.dataset.land='';
+}).catch(()=>{});
 
 function notice(msg){
   const n=document.getElementById('notice');

@@ -643,8 +643,9 @@ fn cached_groups() -> Vec<QuotaGroup> {
     ACCOUNTS.lock().unwrap().iter().map(|a| a.group.clone()).collect()
 }
 
-/// The ring shows the one quota that will stop you first, across every account
-fn headline(groups: &[QuotaGroup]) -> Option<LimitWindow> {
+/// The ring shows the one quota that will stop you first, across every account (Command Code's
+/// multi-account card uses it too)
+pub fn headline(groups: &[QuotaGroup]) -> Option<LimitWindow> {
     let mut best: Option<(&QuotaGroup, &LimitWindow)> = None;
     for g in groups {
         for r in &g.rows {

@@ -260,10 +260,16 @@ pub fn reset_bar(app: &AppHandle) {
     emit_config(app);
 }
 
-/// Drag along the right edge. The page calls this once after a press on the pill moves more than
-/// 4 px; from then on a Rust thread follows the system cursor (WebView mousemove is unreliable
-/// once the window itself starts moving). Releasing the left button ends the drag and the centre
-/// ratio is written back to the config.
+/// While dragged the notch travels as a ball (the page draws it) and the window shrinks to this
+/// square: room for the drop to stretch and ripple, and nothing else of the notch left to click on.
+/// Mirrored in ui/notch.html (BALL).
+pub const BALL: f64 = 84.0;
+
+/// Drag, AssistiveTouch-style. The page calls this once a press on the handle or pill moves more
+/// than 4 px; from then on a Rust thread follows the system cursor (WebView mousemove is unreliable
+/// once the window itself starts moving). The ball stays centred on the cursor and its smoothed
+/// velocity is streamed to the page, which stretches the drop along it. On release it glides to the
+/// nearest edge (or stays where it was let go in island mode) and settles back into the handle.
 static DRAGGING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[cfg(windows)]
@@ -278,91 +284,127 @@ fn left_button_down() -> bool {
 
 #[tauri::command]
 fn drag_begin(app: AppHandle) {
-    if DRAGGING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+    use std::sync::atomic::Ordering;
+    use std::time::{Duration, Instant};
+    if DRAGGING.swap(true, Ordering::SeqCst) {
         return;
     }
-    let free_move = {
+    let (free_move, notch_scale) = {
         let st = app.state::<AppState>();
         let c = st.cfg.lock().unwrap();
-        c.drag_enabled
+        (c.drag_enabled, c.scale.clamp(0.7, 1.6))
     };
     std::thread::spawn(move || {
-        let Some(w) = app.get_webview_window("notch") else {
-            DRAGGING.store(false, std::sync::atomic::Ordering::SeqCst);
-            return;
+        let bail = |app: &AppHandle| {
+            DRAGGING.store(false, Ordering::SeqCst);
+            let _ = app.emit("drag_end", false);
         };
-        let (Ok(start_cur), Ok(start_pos), Ok(size)) = (app.cursor_position(), w.outer_position(), w.outer_size())
-        else {
-            DRAGGING.store(false, std::sync::atomic::Ordering::SeqCst);
-            return;
+        let Some(w) = app.get_webview_window("notch") else { return bail(&app) };
+        let (Ok(Some(mon)), Ok(cur)) = (w.primary_monitor(), app.cursor_position()) else { return bail(&app) };
+        let ms = mon.scale_factor();
+        let side = (BALL * notch_scale * ms).round() as i32;
+        // It lands as the closed handle, whatever it was when picked up; the card is gone too
+        EXPANDED.store(false, Ordering::Relaxed);
+        *HOT.lock().unwrap() = None;
+        let _ = w.set_size(tauri::PhysicalSize::new(side as u32, side as u32));
+        let centred = |x: f64, y: f64| {
+            clamp_to_virtual_screen((x - side as f64 / 2.0).round() as i32, (y - side as f64 / 2.0).round() as i32, side, side)
         };
-        let (ww, wh) = (size.width as i32, size.height as i32);
-        let mut moved = false;
-        // Both modes drag freely across every monitor; only the release differs — docked snaps to
-        // the nearest edge (AssistiveTouch), free keeps the island wherever it was let go.
-        let mut last = (start_pos.x, start_pos.y);
+        let mut last = centred(cur.x, cur.y);
+        let _ = w.set_position(tauri::PhysicalPosition::new(last.0, last.1));
+
+        let mut prev = (cur.x, cur.y, Instant::now());
+        let mut vel = (0.0f64, 0.0f64);
+        let mut last_emit = Instant::now();
         loop {
             if !left_button_down() {
                 break;
             }
-            if let Ok(cur) = app.cursor_position() {
-                let nx = (start_pos.x as f64 + (cur.x - start_cur.x)).round() as i32;
-                let ny = (start_pos.y as f64 + (cur.y - start_cur.y)).round() as i32;
-                let (nx, ny) = clamp_to_virtual_screen(nx, ny, ww, wh);
-                if (nx, ny) != last {
-                    last = (nx, ny);
-                    moved = true;
-                    let _ = w.set_position(tauri::PhysicalPosition::new(nx, ny));
+            if let Ok(c) = app.cursor_position() {
+                let p = centred(c.x, c.y);
+                if p != last {
+                    last = p;
+                    let _ = w.set_position(tauri::PhysicalPosition::new(p.0, p.1));
+                }
+                let dt = prev.2.elapsed().as_secs_f64();
+                if dt > 0.0 {
+                    // Smoothed, so one jittery cursor sample does not jerk the drop around
+                    vel = (vel.0 * 0.7 + (c.x - prev.0) / dt * 0.3, vel.1 * 0.7 + (c.y - prev.1) / dt * 0.3);
+                    prev = (c.x, c.y, Instant::now());
                 }
             }
-            std::thread::sleep(std::time::Duration::from_millis(8));
+            // ~30 updates a second is enough for the page to ease between; logical px/s
+            if last_emit.elapsed() >= Duration::from_millis(33) {
+                let _ = app.emit("drag_motion", serde_json::json!({ "vx": vel.0 / ms, "vy": vel.1 / ms }));
+                last_emit = Instant::now();
+            }
+            std::thread::sleep(Duration::from_millis(8));
         }
-        if moved {
-            let centre = (last.0 + ww / 2, last.1 + wh / 2);
-            if free_move {
-                // Saved against the island's own anchor point, matching how place_notch reads it back
-                let notch_scale = {
-                    let st = app.state::<AppState>();
-                    let c = st.cfg.lock().unwrap();
-                    c.scale.clamp(0.7, 1.6)
-                };
-                let anchor = island_anchor_y(EXPANDED.load(std::sync::atomic::Ordering::Relaxed), wh, notch_scale);
+
+        let centre = (last.0 + side / 2, last.1 + side / 2);
+        if free_move {
+            // Closed, the island's anchor is its window centre — exactly where the ball was let go
+            {
                 let st = app.state::<AppState>();
                 let mut c = st.cfg.lock().unwrap();
                 c.bar_x = Some(centre.0);
-                c.bar_y = Some(last.1 + anchor);
+                c.bar_y = Some(centre.1);
                 config::save(&c);
-                applog(&format!("notch drag (island): anchor=({},{})", centre.0, last.1 + anchor));
-            } else if let Ok(Some(mon)) = w.primary_monitor() {
-                let (mx, my) = (mon.position().x, mon.position().y);
-                let (mw, mh) = (mon.size().width as i32, mon.size().height as i32);
-                // Nearest edge by gap, then the centre's position along that edge becomes the ratio
-                let gaps = [
-                    ("left", centre.0 - mx),
-                    ("right", mx + mw - centre.0),
-                    ("top", centre.1 - my),
-                    ("bottom", my + mh - centre.1),
-                ];
-                let (edge, _) = gaps.iter().min_by_key(|(_, g)| *g).copied().unwrap_or(("right", 0));
-                let ratio = if edge_is_horizontal(edge) {
-                    (centre.0 - mx) as f64 / mw.max(1) as f64
-                } else {
-                    (centre.1 - my) as f64 / mh.max(1) as f64
-                };
-                {
-                    let st = app.state::<AppState>();
-                    let mut c = st.cfg.lock().unwrap();
-                    c.edge = edge.to_string();
-                    c.notch_y = ratio.clamp(0.0, 1.0);
-                    config::save(&c);
-                }
-                applog(&format!("notch drag: snapped to {edge} ratio={ratio:.3}"));
-                emit_config(&app);
             }
-            place_notch(&app); // settle into the snapped/clamped spot
+            applog(&format!("notch drag (island): centre=({},{})", centre.0, centre.1));
+            let _ = app.emit("drag_land", serde_json::json!({ "edge": "free" }));
+            std::thread::sleep(Duration::from_millis(200));
+        } else {
+            let (mx, my) = (mon.position().x, mon.position().y);
+            let (mw, mh) = (mon.size().width as i32, mon.size().height as i32);
+            // Nearest edge by gap, then the centre's position along that edge becomes the ratio
+            let gaps = [
+                ("left", centre.0 - mx),
+                ("right", mx + mw - centre.0),
+                ("top", centre.1 - my),
+                ("bottom", my + mh - centre.1),
+            ];
+            let (edge, _) = gaps.iter().min_by_key(|(_, g)| *g).copied().unwrap_or(("right", 0));
+            let ratio = if edge_is_horizontal(edge) {
+                (centre.0 - mx) as f64 / mw.max(1) as f64
+            } else {
+                (centre.1 - my) as f64 / mh.max(1) as f64
+            };
+            {
+                let st = app.state::<AppState>();
+                let mut c = st.cfg.lock().unwrap();
+                c.edge = edge.to_string();
+                c.notch_y = ratio.clamp(0.0, 1.0);
+                config::save(&c);
+            }
+            applog(&format!("notch drag: snapped to {edge} ratio={ratio:.3}"));
+            // Glide the drop to the spot the handle will occupy — flush against that edge — with an
+            // ease-out, while the page flattens it against the edge it is about to touch
+            let along_y = (centre.1 - side / 2).clamp(my, my + (mh - side).max(0));
+            let along_x = (centre.0 - side / 2).clamp(mx, mx + (mw - side).max(0));
+            let target = match edge {
+                "left" => (mx, along_y),
+                "top" => (along_x, my),
+                "bottom" => (along_x, my + mh - side),
+                _ => (mx + mw - side, along_y),
+            };
+            let _ = app.emit("drag_land", serde_json::json!({ "edge": edge }));
+            const STEPS: i32 = 14;
+            for i in 1..=STEPS {
+                let t = i as f64 / STEPS as f64;
+                let e = 1.0 - (1.0 - t).powi(3);
+                let x = last.0 as f64 + (target.0 - last.0) as f64 * e;
+                let y = last.1 as f64 + (target.1 - last.1) as f64 * e;
+                let _ = w.set_position(tauri::PhysicalPosition::new(x.round() as i32, y.round() as i32));
+                std::thread::sleep(Duration::from_millis(14));
+            }
+            std::thread::sleep(Duration::from_millis(110));
+            emit_config(&app);
         }
-        DRAGGING.store(false, std::sync::atomic::Ordering::SeqCst);
-        let _ = app.emit("drag_end", moved);
+        // drag_end before the resize, so the page has left ball mode when its design width is re-measured
+        DRAGGING.store(false, Ordering::SeqCst);
+        let _ = app.emit("drag_end", true);
+        place_notch(&app);
     });
 }
 pub fn place_bar(app: &AppHandle) {
@@ -824,7 +866,7 @@ fn main() {
             settings::open_settings,
             settings::settings_status,
             settings::save_commandcode_key,
-            settings::clear_commandcode_key,
+            settings::remove_commandcode_key,
             settings::save_router9,
             settings::clear_router9,
             settings::router9_local_token,

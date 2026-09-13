@@ -14,7 +14,7 @@ pub fn open(app: &AppHandle) {
     }
     let built = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
         .title("Codenotch — API keys")
-        .inner_size(480.0, 700.0)
+        .inner_size(500.0, 760.0)
         .resizable(false)
         .center()
         .build();
@@ -29,9 +29,17 @@ pub fn open_settings(app: AppHandle) {
 }
 
 #[derive(Serialize)]
+pub struct CcAccount {
+    id: String,
+    label: String,
+    masked: String,
+    /// saved | env | auth.json — only saved ones can be removed from here
+    source: String,
+}
+
+#[derive(Serialize)]
 pub struct Status {
-    cc_source: Option<String>,
-    cc_masked: Option<String>,
+    cc_accounts: Vec<CcAccount>,
     r9_url: String,
     r9_url_custom: bool,
     r9_token_source: Option<String>,
@@ -39,22 +47,13 @@ pub struct Status {
     r9_cf_access: bool,
 }
 
-/// Enough of the key to recognise it, never enough to use it
-fn mask(k: &str) -> String {
-    let n = k.chars().count();
-    if n <= 8 {
-        return "•".repeat(n);
-    }
-    let tail: String = k.chars().skip(n - 4).collect();
-    format!("••••••••{tail}")
-}
-
 #[tauri::command]
 pub fn settings_status() -> Status {
-    let cc = crate::commandcode::key_source();
     Status {
-        cc_source: cc.as_ref().map(|(s, _)| s.to_string()),
-        cc_masked: cc.as_ref().map(|(_, k)| mask(k)),
+        cc_accounts: crate::commandcode::accounts()
+            .into_iter()
+            .map(|a| CcAccount { id: a.id, label: a.label, masked: crate::commandcode::mask_key(&a.key), source: a.source.into() })
+            .collect(),
         r9_url: crate::router9::base_url(),
         r9_url_custom: secrets::get(secrets::ROUTER9_URL).is_some(),
         r9_token_source: crate::router9::token_source().map(String::from),
@@ -76,32 +75,37 @@ fn outcome(ok: bool, saved: bool, message: impl Into<String>) -> Outcome {
     Outcome { ok, saved, message: message.into(), access_blocked: false }
 }
 
-/// Tested against Command Code before it is kept: a key the server rejects is not stored at all,
-/// while one that merely could not be checked (offline) is kept and the poller retries it.
+/// Adds one Command Code account. Tested against Command Code first: a key the server rejects is not
+/// stored at all, while one that merely could not be checked (offline) is kept and the poller retries it.
 #[tauri::command]
 pub fn save_commandcode_key(key: String) -> Outcome {
     let key = key.trim().to_string();
     if key.is_empty() {
         return outcome(false, false, "Paste a key first");
     }
-    let store = |msg: String, ok: bool| match secrets::set(secrets::COMMANDCODE, &key) {
-        Ok(()) => {
+    let store = |label: &str, msg: String, ok: bool| match crate::commandcode::add_key(&key, label) {
+        Ok(n) => {
             crate::commandcode::request_refresh();
-            outcome(ok, true, msg)
+            outcome(ok, true, format!("{msg} · {n} account{} saved", if n == 1 { "" } else { "s" }))
         }
         Err(e) => outcome(false, false, format!("Could not store the key: {e}")),
     };
     match crate::commandcode::test_key(&key) {
-        Ok(user) => store(format!("Connected as {user}"), true),
+        Ok(user) => store(&user, format!("Connected as {user}"), true),
         Err(crate::commandcode::TestErr::Rejected(m)) => outcome(false, false, m),
-        Err(crate::commandcode::TestErr::Other(m)) => store(format!("Saved, but could not verify it yet ({m})"), false),
+        Err(crate::commandcode::TestErr::Other(m)) => store("", format!("Saved, but could not verify it yet ({m})"), false),
     }
 }
 
 #[tauri::command]
-pub fn clear_commandcode_key() {
-    secrets::delete(secrets::COMMANDCODE);
-    crate::commandcode::request_refresh();
+pub fn remove_commandcode_key(id: String) -> Outcome {
+    match crate::commandcode::remove_key(&id) {
+        Ok(()) => {
+            crate::commandcode::request_refresh();
+            outcome(true, true, "Account removed")
+        }
+        Err(e) => outcome(false, false, format!("Could not remove it: {e}")),
+    }
 }
 
 /// Characters a URL needs; anything else (spaces, quotes, & | ^ < >) is refused outright rather
@@ -181,6 +185,7 @@ pub fn open_link(which: String) {
         "commandcode_keys" => "https://commandcode.ai/studio/".to_string(),
         "router9_dashboard" => format!("{}/dashboard", crate::router9::base_url()),
         "cf_service_tokens" => "https://one.dash.cloudflare.com/".to_string(),
+        "router9_repo" => "https://github.com/decolua/9router".to_string(),
         _ => return,
     };
     if !url_is_plain(&url) {
