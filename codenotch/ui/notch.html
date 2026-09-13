@@ -529,11 +529,22 @@ function callq(cmd,args){ // invoke with visible failure: any command error is r
   return invoke(cmd,args).catch(e=>{notice(cmd+' failed: '+(e&&e.message||e));throw e;});
 }
 // Hot rectangles are reported in physical pixels (multiplied by this page's real DPR), so the Rust side does no conversion — WebView2's DPR and the window scale can disagree
-function rectOf(el){const r=el.getBoundingClientRect(),k=window.devicePixelRatio||1;return [r.left*k,r.top*k,r.width*k,r.height*k];}
+function physRect(r){const k=window.devicePixelRatio||1;return [r.left*k,r.top*k,(r.right-r.left)*k,(r.bottom-r.top)*k];}
+function rectOf(el){return physRect(el.getBoundingClientRect());}
+/* The pill's hot area, reaching back to the screen edge it is docked to. A top/bottom island floats
+   16 px clear of its edge, and the cursor naturally rests against the screen edge — right in that
+   gap. Counted as outside, it closed the notch, the handle reappeared under the cursor, the notch
+   reopened, and the whole thing flickered open/closed for as long as the cursor stayed there. */
+function pillHot(){
+  const r=pill.getBoundingClientRect();
+  if(root.dataset.mode==='dock'&&cfg.edge==='top') return {left:r.left,top:0,right:r.right,bottom:r.bottom};
+  if(root.dataset.mode==='dock'&&cfg.edge==='bottom') return {left:r.left,top:r.top,right:r.right,bottom:Math.max(r.bottom,innerHeight)};
+  return r;
+}
 function armWatchdog(){
   requestAnimationFrame(()=>{ // wait one frame so renderCard's new content is laid out before measuring
     if(!card.classList.contains('show'))return;
-    callq('set_expanded',{on:true,rects:[rectOf(pill),rectOf(card)]}).catch(()=>{});
+    callq('set_expanded',{on:true,rects:[physRect(pillHot()),rectOf(card)]}).catch(()=>{});
   });
 }
 /* Design width for the current mode, mirroring the Rust constants (NOTCH_W / ISLAND_W / HANDLE_* / BALL).
@@ -574,7 +585,7 @@ function cellAt(x,y){
 }
 function pointerInHot(x,y){
   if(state!=='open') return inRect(x,y,handle.getBoundingClientRect(),8);
-  const p=pill.getBoundingClientRect();
+  const p=pillHot();
   if(inRect(x,y,p,6))return true;
   if(!card.classList.contains('show'))return false;
   const c=card.getBoundingClientRect();
