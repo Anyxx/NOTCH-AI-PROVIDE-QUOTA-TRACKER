@@ -63,7 +63,7 @@ pub fn build_menu(app: &AppHandle, lang: &str) -> tauri::Result<Menu<Wry>> {
         (c.drag_enabled, c.opacity, c.scale, c.live_activity, c.alert_levels.clone(), c.compact, c.hide_fullscreen, c.theme.clone())
     };
     // Which build is running, at a glance: installers of different rounds otherwise look identical
-    let version = MenuItemBuilder::with_id("version", format!("Codenotch v{} ({})", env!("CARGO_PKG_VERSION"), crate::BUILD))
+    let version = MenuItemBuilder::with_id("version", format!("Codenotch v{} ({}) · Created by penyu101", env!("CARGO_PKG_VERSION"), crate::BUILD))
         .enabled(false)
         .build(app)?;
     let hide_fs_item = CheckMenuItemBuilder::with_id("hide-fullscreen", tr(lang, "hide_fullscreen"))

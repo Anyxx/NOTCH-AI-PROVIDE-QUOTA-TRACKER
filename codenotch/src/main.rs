@@ -29,7 +29,7 @@ use tauri::{AppHandle, Emitter, Manager};
 /// Logical size of the notch window when open on a side edge: the 70 pt pill column plus room for the hover card.
 pub const NOTCH_W: f64 = 340.0;
 /// Hand-bumped build tag, written to run.log at startup so a log can always be matched to the exe that wrote it.
-pub const BUILD: &str = "r33";
+pub const BUILD: &str = "r34";
 pub const NOTCH_H: f64 = 460.0; // 300 clipped the card once it held three window blocks plus the session list
 /// Open size in island form (top/bottom edge, or free-floating): cells run in a row, card sits under them.
 /// Wide enough for six cells (6×56 + 5×18 + padding = 466) plus room for the card to sit under an end cell.

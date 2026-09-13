@@ -31,6 +31,8 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "publisher": "penyu101",
+    "copyright": "Created by penyu101 · based on Codenotch (MIT)",
     "icon": ["icons/icon.ico"],
     "resources": {
       "../target/release/codenotch-hook.exe": "codenotch-hook.exe"
