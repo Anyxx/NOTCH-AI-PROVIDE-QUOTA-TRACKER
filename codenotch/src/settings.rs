@@ -45,6 +45,9 @@ pub struct Status {
     r9_token_source: Option<String>,
     r9_local_available: bool,
     r9_cf_access: bool,
+    /// saved | env — only a saved key can be removed from here
+    ds_source: Option<String>,
+    ds_masked: Option<String>,
 }
 
 #[tauri::command]
@@ -59,7 +62,38 @@ pub fn settings_status() -> Status {
         r9_token_source: crate::router9::token_source().map(String::from),
         r9_local_available: crate::router9::local_token().is_some(),
         r9_cf_access: crate::router9::cf_access().is_some(),
+        ds_source: crate::deepseek::key().map(|(s, _)| s.to_string()),
+        ds_masked: crate::deepseek::key().map(|(_, k)| crate::commandcode::mask_key(&k)),
     }
+}
+
+/// Tested against DeepSeek first: a key it rejects is not stored; one that could not be checked
+/// (offline) is kept and the poller retries it.
+#[tauri::command]
+pub fn save_deepseek_key(key: String) -> Outcome {
+    let key = key.trim().to_string();
+    if key.is_empty() {
+        return outcome(false, false, "Paste a key first");
+    }
+    let store = |msg: String, ok: bool| match secrets::set(secrets::DEEPSEEK, &key) {
+        Ok(()) => {
+            crate::deepseek::request_refresh();
+            outcome(ok, true, msg)
+        }
+        Err(e) => outcome(false, false, format!("Could not store the key: {e}")),
+    };
+    match crate::deepseek::test_key(&key) {
+        Ok(m) => store(m, true),
+        Err((true, m)) => outcome(false, false, m),
+        Err((false, m)) => store(format!("Saved, but could not verify it yet ({m})"), false),
+    }
+}
+
+#[tauri::command]
+pub fn remove_deepseek_key() -> Outcome {
+    secrets::delete(secrets::DEEPSEEK);
+    crate::deepseek::request_refresh();
+    outcome(true, true, "DeepSeek key removed")
 }
 
 #[derive(Serialize)]
@@ -186,6 +220,7 @@ pub fn open_link(which: String) {
         "router9_dashboard" => format!("{}/dashboard", crate::router9::base_url()),
         "cf_service_tokens" => "https://one.dash.cloudflare.com/".to_string(),
         "router9_repo" => "https://github.com/decolua/9router".to_string(),
+        "deepseek_keys" => "https://platform.deepseek.com/api_keys".to_string(),
         _ => return,
     };
     if !url_is_plain(&url) {

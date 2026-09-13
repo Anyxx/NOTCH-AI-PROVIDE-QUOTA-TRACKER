@@ -124,7 +124,37 @@
   #blob::before{width:36px;height:36px;background:rgba(255,255,255,.2)}
   #blob::after{width:22px;height:22px;background:rgba(255,255,255,.88)}
   #root[data-drag="1"] #blob{opacity:1;transform:scale(1)}
-  #root[data-drag="1"] #pill,#root[data-drag="1"] #handle,#root[data-drag="1"] #card{opacity:0!important;pointer-events:none!important;transition:opacity .08s linear}
+  #root[data-drag="1"] #pill,#root[data-drag="1"] #handle,#root[data-drag="1"] #card,#root[data-drag="1"] #live{opacity:0!important;pointer-events:none!important;transition:opacity .08s linear}
+
+  /* ---------- Peek: Live Activity and alerts ----------
+     Closed, the handle can grow into a small black capsule, the way the Dynamic Island shows a timer
+     or a call: what is working right now (peek 1), or a passing alert (peek 2, a little larger).
+     Rust sizes the window to it (LIVE_W / TOAST_W); it springs out of the edge it is docked to. */
+  #live{
+    position:absolute;inset:4px;border-radius:99px;background:var(--ink);border:1px solid var(--stroke);
+    display:flex;align-items:center;gap:9px;padding:0 14px 0 7px;cursor:pointer;overflow:hidden;
+    opacity:0;pointer-events:none;transform:scale(.3);
+    transition:opacity .18s var(--ease),transform .42s var(--spring);
+  }
+  #root[data-edge="right"] #live{transform-origin:right center}
+  #root[data-edge="left"] #live{transform-origin:left center}
+  #root[data-edge="top"] #live{transform-origin:center top}
+  #root[data-edge="bottom"] #live{transform-origin:center bottom}
+  #root[data-mode="free"] #live{transform-origin:center}
+  #root[data-state="idle"][data-peek="1"] #live,#root[data-state="idle"][data-peek="2"] #live{opacity:1;pointer-events:auto;transform:none}
+  #root[data-peek="1"] #handle,#root[data-peek="2"] #handle{opacity:0!important;pointer-events:none}
+  #root[data-peek="2"] #live{padding-left:10px}
+  .lv-ic{flex:0 0 auto;width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;position:relative;font-size:12px;font-weight:700;color:#e8e8ea}
+  #root[data-peek="2"] .lv-ic{width:38px;height:38px}
+  .lv-ic img{width:16px!important;height:16px!important;border-radius:4px}
+  .lv-ic .mark{display:flex;width:16px;height:16px;color:#e8e8ea}
+  .lv-ic .mark svg{width:16px;height:16px;fill:currentColor}
+  .lv-ic svg.lv-ring{position:absolute;inset:0;width:100%;height:100%}
+  .lv-txt{min-width:0;flex:1;line-height:1.25}
+  .lv-t{font-size:12.5px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #root[data-peek="2"] .lv-t{font-size:13.5px}
+  .lv-s{font-size:11px;color:#9a9aa3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .lv-v{font-size:13px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}
 
   /* ---------- Cells ---------- */
   .cell{
@@ -224,6 +254,7 @@
   <div id="card"></div>
   <div id="handle"></div><!-- the resting state: a slim capsule at the edge, like the iOS home indicator -->
   <div id="pill"></div><!-- one .cell per provider (column on a side edge, row as an island) -->
+  <div id="live"></div><!-- closed but peeking: Live Activity or an alert -->
   <div id="blob"></div><!-- what is carried while dragging: an AssistiveTouch-style button -->
   <div id="notice"></div>
 </div>
@@ -242,12 +273,13 @@ let cursorSnap={status:'absent',windows:[],fetched_at:0,note:''};
 let agSnap={status:'absent',windows:[],fetched_at:0,note:''};
 let ccSnap={status:'absent',windows:[],fetched_at:0,note:''};
 let r9Snap={status:'absent',windows:[],fetched_at:0,note:''};
-let cfg={opacity:1,scale:1,edge:'right',drag_enabled:false};
+let dsSnap={status:'absent',windows:[],fetched_at:0,note:''};
+let cfg={opacity:1,scale:1,edge:'right',drag_enabled:false,live_activity:true,alert_levels:[80,95]};
 let glyphs={}; // id → {kind:'mark'|'appicon', url}
 let activity=[]; // working state of the non-Claude providers: {provider,state:'busy'|'waiting',name,detail,since}
 
 const root=document.getElementById('root'), card=document.getElementById('card');
-const pill=document.getElementById('pill'), handle=document.getElementById('handle');
+const pill=document.getElementById('pill'), handle=document.getElementById('handle'), live=document.getElementById('live');
 
 /* ---------- Open / closed ----------
    The window itself resizes with the state (Rust side): an always-on-top window eats clicks over its
@@ -259,6 +291,9 @@ let state='idle', pendingShrink=null;
 // Declared up here, not beside the drag code: designWidth() reads it during the very first reportDpr(),
 // and a `let` further down is still in its temporal dead zone then — the read throws and the script dies.
 let press=null, dragging=false;
+const LIVE_W=240, TOAST_W=340; // mirror main.rs LIVE_W / TOAST_W
+// The peek size last asked of Rust (0 handle, 1 Live Activity, 2 alert) — read by designWidth, so declared up here too
+let peekWin=0;
 function isIsland(){ return cfg.drag_enabled || cfg.edge==='top' || cfg.edge==='bottom'; }
 function openNotch(){
   clearTimeout(pendingShrink); clearTimeout(dwellTimer);
@@ -280,6 +315,7 @@ function closeNotch(){
   // Let the pill shrink away before the window does, or the last frames get clipped mid-animation
   clearTimeout(pendingShrink);
   pendingShrink=setTimeout(()=>invoke('notch_expand',{on:false}).catch(()=>{}),CLOSE_MS);
+  setTimeout(pumpToasts,CLOSE_MS+60); // alerts that came in while it was open
 }
 
 // "Is it working?" per provider: Claude from the four-state engine, the others from the activity probe. Returns running | attention | idle
@@ -310,6 +346,7 @@ function providers(){
   if(agSnap.status!=='absent') list.push({id:'gemini',name:'Antigravity',glyph:'Ag',snap:agSnap});
   if(ccSnap.status!=='absent') list.push({id:'commandcode',name:'Command Code',glyph:'Cc',snap:ccSnap});
   if(r9Snap.status!=='absent') list.push({id:'router9',name:'9Router',glyph:'9r',snap:r9Snap});
+  if(dsSnap.status!=='absent') list.push({id:'deepseek',name:'DeepSeek',glyph:'Ds',snap:dsSnap});
   return list;
 }
 function headlineOf(snap){
@@ -341,9 +378,144 @@ function tintHandle(){
   handle.style.opacity = state==='open' ? '' : (anyWorking?'.95':'.62');
 }
 
+/* ---------- DeepSeek pricing ----------
+   Peak: Mon–Fri 01:00–04:00 and 06:00–10:00 UTC; every other hour is off-peak at half price
+   (api-docs.deepseek.com/quick_start/pricing). A fixed timetable, so it is worked out here — the
+   countdown and the switch-over alert need it every minute, not every five. */
+const DS_PEAK=[[60,240],[360,600]]; // UTC minutes of the day
+function dsPeakAt(t){
+  const d=new Date(t), w=d.getUTCDay();
+  if(w<1||w>5) return false;
+  const m=d.getUTCHours()*60+d.getUTCMinutes();
+  return DS_PEAK.some(([a,b])=>m>=a&&m<b);
+}
+function dsPricing(t=Date.now()){
+  const peak=dsPeakAt(t), d=new Date(t);
+  const day0=Date.UTC(d.getUTCFullYear(),d.getUTCMonth(),d.getUTCDate());
+  for(let i=0;i<9;i++) for(const [a,b] of DS_PEAK) for(const m of [a,b]){
+    const c=day0+i*864e5+m*6e4;
+    if(c>t && dsPeakAt(c)!==peak) return {peak,next:c};
+  }
+  return {peak,next:null};
+}
+function hm(ms){ return new Date(ms).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',hour12:false}); }
+function dsHoursLocal(){
+  const at=m=>hm(Date.UTC(2024,0,1,0,m));
+  return `${at(60)}–${at(240)} & ${at(360)}–${at(600)}`;
+}
+function whenCopy(ms){
+  if(!ms) return '';
+  const d=new Date(ms), same=d.toDateString()===new Date().toDateString();
+  return (same?'':d.toLocaleDateString('en-US',{weekday:'short'})+' ')+hm(ms)+' ('+soonCopy(ms)+')';
+}
+function shortMoney(s){
+  const m=/^([$¥])([\d.]+)/.exec(s||''); if(!m) return null;
+  const n=parseFloat(m[2]);
+  return m[1]+(n>=100?Math.round(n):n.toFixed(1));
+}
+function renderDeepseek(snap){
+  let h='';
+  for(const w of snap.windows){
+    const left=Math.max(0,Math.round((1-w.used)*100)), parts=(w.amount||'').split(' · ');
+    h+=`<div class="win"><div class="w-row"><span class="w-label">${esc(w.label)}</span><span class="w-reset">${esc(parts[0]||'')}</span></div>
+      <div class="w-track"><div class="w-fill" style="width:${left}%;background:${tone(w.used)}"></div></div>
+      <div class="w-used">~${left}% of the last top-up left${parts.length>1?' · '+esc(parts.slice(1).join(' · ')):''}</div></div>`;
+  }
+  const {peak,next}=dsPricing(), col=peak?'#FF8A3D':AMPLE;
+  h+=`<div class="win"><div class="w-row"><span class="w-label"><span class="s-dot" style="display:inline-block;background:${col};margin-right:6px"></span>${peak?'Peak pricing':'Off-peak · 50% cheaper'}</span></div>
+    <div class="w-used">${peak?'Off-peak':'Peak'} starts ${esc(whenCopy(next))}</div>
+    <div class="w-used">Peak hours: ${dsHoursLocal()}, weekdays</div></div>`;
+  if(snap.note && !shortMoney(snap.note)) h+=`<div class="c-note">${esc(snap.note)}</div>`;
+  return h;
+}
+
+/* ---------- Live Activity + alerts ----------
+   Closed, the notch peeks: a Live Activity while a provider is working or waiting on you, and a
+   short alert when something happens — a quota crosses an alert level, a quota resets, a provider
+   starts waiting on you, DeepSeek switches between peak and off-peak. Alerts queue and take turns. */
+let peekShrinkT=null, toastQ=[], toastNow=null, toastT=null;
+function liveInfo(){
+  if(cfg.live_activity===false) return null;
+  const ps=providers();
+  const att=ps.find(p=>workState(p.id)==='attention');
+  const run=ps.filter(p=>workState(p.id)==='running');
+  const p=att||run[0]; if(!p) return null;
+  const h=headlineOf(p.snap), metered=h&&h.count==null;
+  const title=att?`${p.name} needs you`:`${p.name} working`;
+  const sub=att?'Waiting for your reply':(run.length>1?`+${run.length-1} more working`:(metered&&h.resets_at?resetCopy(h.resets_at):''));
+  const ring=att
+    ?`<svg class="lv-ring arc-pulse" viewBox="0 0 28 28"><circle cx="14" cy="14" r="12.5" fill="none" stroke="${AMBER}" stroke-width="2"/></svg>`
+    :`<svg class="lv-ring arc-spin" viewBox="0 0 28 28"><circle cx="14" cy="14" r="12.5" fill="none" stroke="${RUNGREEN}" stroke-width="2" stroke-dasharray="20 79"/></svg>`;
+  return `<span class="lv-ic">${ring}${glyphHtml(p,true)||esc(p.glyph)}</span>`
+    +`<div class="lv-txt"><div class="lv-t">${esc(title)}</div>${sub?`<div class="lv-s">${esc(sub)}</div>`:''}</div>`
+    +(metered?`<span class="lv-v" style="color:${tone(h.used)}">${Math.round(h.used*100)}%</span>`:'');
+}
+function updatePeek(){
+  const html = toastNow ? toastNow : liveInfo();
+  const want = toastNow ? 2 : (html ? 1 : 0);
+  clearTimeout(peekShrinkT);
+  if(want){
+    if(live.dataset.html!==html){ live.innerHTML=html; live.dataset.html=html; } // untouched otherwise, so the spinner keeps turning
+    if(want!==peekWin){ peekWin=want; invoke('notch_peek',{kind:want}).catch(()=>{}); }
+    root.dataset.peek=String(want);
+  }else if(peekWin){
+    // Let the capsule shrink back into the handle before the window does
+    root.dataset.peek='0';
+    peekShrinkT=setTimeout(()=>{ peekWin=0; invoke('notch_peek',{kind:0}).catch(()=>{}); },CLOSE_MS);
+  }
+}
+function toast(icon,color,title,sub){
+  if(toastQ.length>=4) toastQ.shift();
+  toastQ.push(`<span class="lv-ic" style="background:${color}26;color:${color};font-size:16px">${icon}</span>`
+    +`<div class="lv-txt"><div class="lv-t">${esc(title)}</div>${sub?`<div class="lv-s">${esc(sub)}</div>`:''}</div>`);
+  pumpToasts();
+}
+function pumpToasts(){
+  if(toastNow||state==='open'||dragging||!toastQ.length) return; // queued until the notch is closed again
+  toastNow=toastQ.shift(); updatePeek();
+  clearTimeout(toastT);
+  toastT=setTimeout(()=>{ toastNow=null; updatePeek(); setTimeout(pumpToasts,CLOSE_MS+80); },5000);
+}
+const alertMemo={}, workPrev={};
+// Snapshots restored from disk and the first live readings arrive in the opening seconds: those only set the baseline
+let alertsArmed=false; setTimeout(()=>{alertsArmed=true;},10000);
+function checkEvents(){
+  const levels=(cfg.alert_levels||[]).slice().sort((a,b)=>a-b);
+  for(const p of providers()){
+    const s=p.snap, ws=workState(p.id);
+    if(alertsArmed && ws==='attention' && workPrev[p.id] && workPrev[p.id]!=='attention')
+      toast('!',AMBER,`${p.name} needs you`,'Waiting for your reply');
+    workPrev[p.id]=ws;
+    if(s.status!=='ok' || !levels.length) continue;
+    const rows=[], grouped=s.groups&&s.groups.length;
+    if(!grouped) for(const w of s.windows) if(w.count==null) rows.push({k:w.id||w.label,label:w.label,w});
+    for(const g of (s.groups||[])) for(const w of g.rows) rows.push({k:g.account+'/'+(w.id||w.label),label:`${g.title} · ${g.account} · ${w.label}`,w});
+    for(const r of rows){
+      const key=p.id+':'+r.k, pct=Math.round(r.w.used*100);
+      const lvl=levels.filter(l=>pct>=l).pop()||0, m=alertMemo[key];
+      if(m && alertsArmed){
+        if(lvl>m.lvl) toast('!',tone(r.w.used),`${p.name} ${pct}% used`,r.label+(r.w.resets_at?' · '+resetCopy(r.w.resets_at):''));
+        else if(m.max>=50 && pct<10) toast('✓',AMPLE,p.id==='deepseek'?'DeepSeek topped up':`${p.name} quota reset`,r.label);
+      }
+      alertMemo[key]={lvl, max: pct<10 ? pct : Math.max(m?m.max:0,pct)};
+    }
+  }
+}
+let dsPrevPeak=null;
+setInterval(()=>{
+  if(dsSnap.status==='absent') return;
+  const {peak,next}=dsPricing();
+  if(dsPrevPeak!==null && peak!==dsPrevPeak)
+    toast(peak?'⏱':'☾', peak?'#FF8A3D':AMPLE, peak?'DeepSeek peak pricing started':'DeepSeek off-peak · 50% cheaper', (peak?'Off-peak again ':'Until ')+whenCopy(next));
+  dsPrevPeak=peak;
+  if(card.classList.contains('show')&&hoverId==='deepseek') renderCard();
+},30000);
+
 function renderRing(){
   const ps=providers();
   tintHandle();
+  checkEvents();
+  updatePeek();
   if(state!=='open') return; // nothing of the pill is on screen while closed; skip the DOM work entirely
   // Rebuild the DOM only when the structure changes (never swap the element under the cursor)
   const want=ps.map(p=>p.id+':'+(glyphs[p.id]?glyphs[p.id].kind:'-')).join(',');
@@ -366,6 +538,7 @@ function renderRing(){
     }
     svg.innerHTML=inner;
     if(p.snap.status==='needsAuth'||p.snap.status==='none') pct.textContent='—';
+    else if(p.id==='deepseek' && shortMoney(p.snap.note)) pct.textContent=shortMoney(p.snap.note); // prepaid: the balance says more than a share
     else if(h && h.count!=null) pct.textContent='~'+h.count;
     else if(h) pct.textContent=(h.derived?'~':'')+Math.round(h.used*100)+'%';
     else pct.textContent='…';
@@ -433,11 +606,13 @@ function renderCard(){
   let html=`<div class="c-head">${headIcon}<span class="c-title">${p.name} Usage</span></div>`;
   if(staleOf(snap)&&snap.fetched_at) html+=`<div class="c-sub">Updated ${ago(snap.fetched_at)}</div>`;
   if(snap.status==='needsAuth'){
-    const who={claude:'Sign in to Claude Code to see usage.',cursor:'Sign in to Cursor to see usage.',codex:'Sign in to Codex to see usage.',gemini:'Sign in to Antigravity to see usage.',commandcode:'Add a Command Code API key to see usage.',router9:'Connect 9Router to see usage.'}[p.id]||'';
+    const who={claude:'Sign in to Claude Code to see usage.',cursor:'Sign in to Cursor to see usage.',codex:'Sign in to Codex to see usage.',gemini:'Sign in to Antigravity to see usage.',commandcode:'Add a Command Code API key to see usage.',router9:'Connect 9Router to see usage.',deepseek:'Add a DeepSeek API key to see your balance.'}[p.id]||'';
     html+=`<div class="c-note">${who}<br>${esc(snap.note||'')}</div>`;
     // The notch cannot take keyboard focus, so the key is typed in the API-keys window instead
-    if(p.id==='commandcode'||p.id==='router9')
+    if(p.id==='commandcode'||p.id==='router9'||p.id==='deepseek')
       html+=`<button onclick="invoke('open_settings')" style="margin-top:10px;font:600 12px 'Segoe UI',system-ui,sans-serif;background:#ececf0;color:#0b0b0d;border:0;border-radius:8px;padding:7px 12px;cursor:pointer">Add API key…</button>`;
+  }else if(p.id==='deepseek'){
+    html+=renderDeepseek(snap);
   }else if(grouped){
     html+=`<div class="c-sub">Quota left per account</div>`;
     html+=renderGroups(snap.groups);
@@ -552,7 +727,11 @@ function armWatchdog(){
    mismatch measured here is exactly the user's size setting and fitZoom turns it into content zoom. */
 function designWidth(){
   if(dragging) return BALL;
-  if(state!=='open') return isIsland()?132:18;
+  if(state!=='open'){
+    if(peekWin===2) return TOAST_W;
+    if(peekWin===1) return LIVE_W;
+    return isIsland()?132:18;
+  }
   return isIsland()?560:340;
 }
 // Viewport fit (pure front-end fallback, independent of Rust): if this page's CSS viewport is not the
@@ -584,7 +763,9 @@ function cellAt(x,y){
   return null;
 }
 function pointerInHot(x,y){
-  if(state!=='open') return inRect(x,y,handle.getBoundingClientRect(),8);
+  if(state!=='open') return root.dataset.peek==='1'||root.dataset.peek==='2'
+    ? inRect(x,y,live.getBoundingClientRect(),6)
+    : inRect(x,y,handle.getBoundingClientRect(),8);
   const p=pillHot();
   if(inRect(x,y,p,6))return true;
   if(!card.classList.contains('show'))return false;
@@ -629,6 +810,7 @@ listen('state',()=>{if(card.classList.contains('show'))armWatchdog();}).catch(()
 function beginPress(e){ if(e.button!==0)return; press={x:e.clientX,y:e.clientY,id:cellAt(e.clientX,e.clientY)||hoverId}; }
 pill.addEventListener('mousedown',beginPress);
 handle.addEventListener('mousedown',beginPress);
+live.addEventListener('mousedown',beginPress);
 document.addEventListener('mousemove',e=>{
   if(!press||dragging)return;
   if(Math.abs(e.clientY-press.y)>4||Math.abs(e.clientX-press.x)>4){
@@ -654,6 +836,7 @@ listen('drag_end',()=>{
   // is measured against the handle's design width rather than the button's
   dragging=false; press=null;
   root.dataset.drag='0';
+  setTimeout(pumpToasts,400);
 }).catch(()=>{});
 
 function notice(msg){
@@ -676,6 +859,8 @@ listen('commandcode',e=>{ccSnap=e.payload||ccSnap;renderRing();if(card.classList
 invoke('get_commandcode').then(u=>{ccSnap=u||ccSnap;renderRing();}).catch(()=>{});
 listen('router9',e=>{r9Snap=e.payload||r9Snap;renderRing();if(card.classList.contains('show'))renderCard();}).catch(()=>{});
 invoke('get_router9').then(u=>{r9Snap=u||r9Snap;renderRing();}).catch(()=>{});
+listen('deepseek',e=>{dsSnap=e.payload||dsSnap;renderRing();if(card.classList.contains('show'))renderCard();}).catch(()=>{});
+invoke('get_deepseek').then(u=>{dsSnap=u||dsSnap;renderRing();}).catch(()=>{});
 function applyCfg(){
   root.style.opacity = (cfg.opacity!=null?cfg.opacity:1);
   root.dataset.edge = cfg.edge||'right';

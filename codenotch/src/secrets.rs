@@ -14,6 +14,7 @@ pub const ROUTER9_URL: &str = "codenotch:router9-url";
 /// Cloudflare Access service token, for a 9Router published behind Access (Zero Trust)
 pub const ROUTER9_CF_ID: &str = "codenotch:router9-cf-access-id";
 pub const ROUTER9_CF_SECRET: &str = "codenotch:router9-cf-access-secret";
+pub const DEEPSEEK: &str = "codenotch:deepseek";
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()

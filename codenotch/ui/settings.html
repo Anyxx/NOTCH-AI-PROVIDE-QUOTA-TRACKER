@@ -141,6 +141,23 @@
     <div class="result" id="r9Result"></div>
   </section>
 
+  <section class="card">
+    <div class="card-h"><h2>DeepSeek</h2><span class="chip" id="dsChip">…</span></div>
+    <p class="desc">Shows your API balance, and whether DeepSeek's peak or off-peak (50% cheaper) pricing is on right now — with an alert when it switches.</p>
+    <div class="acct-list" id="dsList"></div>
+    <label for="dsKey">API key</label>
+    <div class="field">
+      <input id="dsKey" type="password" placeholder="Paste a DeepSeek API key (sk-…)" autocomplete="off" spellcheck="false">
+      <button class="icon ghost" id="dsShow" title="Show / hide">👁</button>
+    </div>
+    <div class="row">
+      <button class="ghost" id="dsGet">Get API key ↗</button>
+      <span class="spacer"></span>
+      <button class="primary" id="dsSave">Save &amp; test</button>
+    </div>
+    <div class="result" id="dsResult"></div>
+  </section>
+
   <section class="card guide">
     <div class="card-h"><h2>Guide: 9Router Quota Tracker</h2></div>
     <p class="desc">Shows every account 9Router manages — Antigravity, Claude, Codex… — with what is left and when it resets, just like its Quota Tracker page.</p>
@@ -250,10 +267,44 @@ function renderCc(list){
   }
 }
 
+function renderDs(s){
+  const src = s.ds_source;
+  $('dsChip').textContent = src ? 'Connected' : 'Not connected';
+  $('dsChip').className = 'chip' + (src ? ' ok' : '');
+  const box = $('dsList'); box.innerHTML = '';
+  if(!src) return;
+  const row = document.createElement('div'); row.className = 'acct';
+  row.innerHTML = '<div class="acct-main"><div class="acct-name">DeepSeek API</div><div class="acct-sub"></div></div><span class="badge"></span>';
+  row.querySelector('.acct-sub').textContent = s.ds_masked || '';
+  row.querySelector('.badge').textContent = src === 'saved' ? 'Saved here' : 'DEEPSEEK_API_KEY';
+  if(src === 'saved'){
+    const b = document.createElement('button'); b.className = 'ghost'; b.textContent = 'Remove';
+    b.onclick = async () => {
+      b.disabled = true;
+      const r = await invoke('remove_deepseek_key');
+      say($('dsResult'), 'warn', r.message); refresh();
+    };
+    row.appendChild(b);
+  }
+  box.appendChild(row);
+}
+
+async function saveDs(){
+  const btn = $('dsSave');
+  busy(btn, true, 'Checking…'); say($('dsResult'), 'warn', 'Checking the key with DeepSeek…');
+  try {
+    const r = await invoke('save_deepseek_key', {key: $('dsKey').value});
+    say($('dsResult'), r.ok ? 'ok' : (r.saved ? 'warn' : 'bad'), r.message);
+    if(r.saved) $('dsKey').value = '';
+  } catch(e){ say($('dsResult'), 'bad', String(e)); }
+  busy(btn, false, 'Save & test'); refresh();
+}
+
 let first = true;
 async function refresh(){
   let s; try { s = await invoke('settings_status'); } catch(e){ return; }
   renderCc(s.cc_accounts || []);
+  renderDs(s);
   const r9Label = {saved:'Token saved here', local:"Using this PC's 9Router"}[s.r9_token_source];
   $('r9Chip').textContent = r9Label || 'Not connected';
   $('r9Chip').className = 'chip' + (s.r9_token_source ? ' ok' : '');
@@ -274,6 +325,10 @@ $('ccGet').onclick = () => invoke('open_link', {which:'commandcode_keys'});
 $('r9Dash').onclick = () => invoke('open_link', {which:'router9_dashboard'});
 $('cfOpen').onclick = () => invoke('open_link', {which:'cf_service_tokens'});
 $('r9Repo').onclick = () => invoke('open_link', {which:'router9_repo'});
+$('dsShow').onclick = () => toggle($('dsKey'));
+$('dsGet').onclick = () => invoke('open_link', {which:'deepseek_keys'});
+$('dsSave').onclick = saveDs;
+$('dsKey').addEventListener('keydown', e => { if(e.key === 'Enter') saveDs(); });
 
 async function saveCc(){
   const btn = $('ccSave'), key = $('ccKey').value;

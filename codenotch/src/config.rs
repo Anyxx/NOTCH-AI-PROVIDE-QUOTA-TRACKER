@@ -35,6 +35,19 @@ pub struct Config {
     /// Notch size multiplier, 0.7-1.6 (tray submenu)
     #[serde(default = "default_scale")]
     pub scale: f64,
+    /// While the notch is closed, grow the handle into a small pill showing what is working (tray toggle)
+    #[serde(default = "default_true")]
+    pub live_activity: bool,
+    /// Quota percentages that trigger an island alert when crossed; empty = alerts off (tray submenu)
+    #[serde(default = "default_alert_levels")]
+    pub alert_levels: Vec<u32>,
+}
+
+fn default_true() -> bool {
+    true
+}
+fn default_alert_levels() -> Vec<u32> {
+    vec![80, 95]
 }
 
 fn default_notch_y() -> f64 {
@@ -70,6 +83,8 @@ impl Default for Config {
             edge: default_edge(),
             opacity: default_opacity(),
             scale: default_scale(),
+            live_activity: true,
+            alert_levels: default_alert_levels(),
         }
     }
 }

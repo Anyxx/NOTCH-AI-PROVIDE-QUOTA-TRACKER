@@ -22,6 +22,13 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Tray "Quota alerts" choices: menu id, label key, the percentages that alert
+const ALERT_PRESETS: [(&str, &str, &[u32]); 3] = [
+    ("alerts-off", "alerts_off", &[]),
+    ("alerts-high", "alerts_high", &[80, 95]),
+    ("alerts-all", "alerts_all", &[50, 80, 95]),
+];
+
 pub fn build_menu(app: &AppHandle, lang: &str) -> tauri::Result<Menu<Wry>> {
     let install = MenuItemBuilder::with_id("install", tr(lang, "install")).build(app)?;
     let uninstall = MenuItemBuilder::with_id("uninstall", tr(lang, "uninstall")).build(app)?;
@@ -50,14 +57,26 @@ pub fn build_menu(app: &AppHandle, lang: &str) -> tauri::Result<Menu<Wry>> {
         .checked(crate::autostart::is_enabled())
         .build(app)?;
 
-    let (free_move, opacity, notch_scale) = {
+    let (free_move, opacity, notch_scale, live, levels) = {
         let st = app.state::<crate::AppState>();
         let c = st.cfg.lock().unwrap();
-        (c.drag_enabled, c.opacity, c.scale)
+        (c.drag_enabled, c.opacity, c.scale, c.live_activity, c.alert_levels.clone())
     };
     let free = CheckMenuItemBuilder::with_id("free-move", tr(lang, "free_move"))
         .checked(free_move)
         .build(app)?;
+    let live_item = CheckMenuItemBuilder::with_id("live-activity", tr(lang, "live_activity"))
+        .checked(live)
+        .build(app)?;
+    let alert_items: Vec<_> = ALERT_PRESETS
+        .iter()
+        .map(|(id, key, set)| {
+            CheckMenuItemBuilder::with_id(*id, tr(lang, key)).checked(levels.as_slice() == *set).build(app)
+        })
+        .collect::<tauri::Result<_>>()?;
+    let alert_refs: Vec<&dyn tauri::menu::IsMenuItem<Wry>> =
+        alert_items.iter().map(|i| i as &dyn tauri::menu::IsMenuItem<Wry>).collect();
+    let alerts_menu = SubmenuBuilder::new(app, tr(lang, "alerts")).items(&alert_refs).build()?;
     let opacity_items: Vec<_> = [100u32, 85, 70, 55, 40]
         .iter()
         .map(|pct| {
@@ -91,6 +110,8 @@ pub fn build_menu(app: &AppHandle, lang: &str) -> tauri::Result<Menu<Wry>> {
         .item(&refresh)
         .item(&reset)
         .item(&free)
+        .item(&live_item)
+        .item(&alerts_menu)
         .item(&opacity_menu)
         .item(&scale_menu)
         .item(&open_data)
@@ -143,6 +164,7 @@ fn handle(app: &AppHandle, id: &str) {
             crate::antigravity::request_refresh();
             crate::commandcode::request_refresh();
             crate::router9::request_refresh();
+            crate::deepseek::request_refresh();
             let a = app.clone();
             std::thread::spawn(move || crate::reload_glyphs(&a));
         }
@@ -156,6 +178,28 @@ fn handle(app: &AppHandle, id: &str) {
             crate::place_notch(app);
             crate::emit_config(app);
             refresh_menu(app);
+        }
+        "live-activity" => {
+            {
+                let st = app.state::<crate::AppState>();
+                let mut c = st.cfg.lock().unwrap();
+                c.live_activity = !c.live_activity;
+                crate::config::save(&c);
+            }
+            crate::emit_config(app);
+            refresh_menu(app);
+        }
+        _ if id.starts_with("alerts-") => {
+            if let Some((_, _, set)) = ALERT_PRESETS.iter().find(|(pid, _, _)| *pid == id) {
+                {
+                    let st = app.state::<crate::AppState>();
+                    let mut c = st.cfg.lock().unwrap();
+                    c.alert_levels = set.to_vec();
+                    crate::config::save(&c);
+                }
+                crate::emit_config(app);
+                refresh_menu(app);
+            }
         }
         _ if id.starts_with("opacity-") => {
             if let Ok(pct) = id[8..].parse::<f64>() {

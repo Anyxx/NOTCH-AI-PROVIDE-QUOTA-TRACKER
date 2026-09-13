@@ -15,6 +15,7 @@ mod cursor;
 mod antigravity;
 mod commandcode;
 mod router9;
+mod deepseek;
 mod secrets;
 mod settings;
 mod glyphs;
@@ -48,9 +49,17 @@ const CARD_H: f64 = 280.0;
 /// an always-on-top window swallows clicks over its transparent area, so "hidden" has to mean "small", not "invisible".
 pub const HANDLE_LONG: f64 = 132.0;
 pub const HANDLE_SHORT: f64 = 18.0;
+/// Closed but "peeking": the handle grown into a small pill, Dynamic Island style — a Live Activity
+/// (what is working right now) or, larger, a passing alert. Mirrored in ui/notch.html (PEEK_W).
+const LIVE_W: f64 = 240.0;
+const LIVE_H: f64 = 44.0;
+const TOAST_W: f64 = 340.0;
+const TOAST_H: f64 = 64.0;
 
 /// Open (true) or collapsed to the handle (false). The page drives this through `notch_expand`.
 static EXPANDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// 0 = plain handle, 1 = Live Activity pill, 2 = alert pill. Only matters while closed. Set by `notch_peek`.
+static PEEK: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 fn edge_is_horizontal(edge: &str) -> bool {
     edge == "top" || edge == "bottom"
@@ -66,6 +75,7 @@ pub struct AppState {
     pub antigravity: Mutex<usage::UsageSnapshot>,
     pub commandcode: Mutex<usage::UsageSnapshot>,
     pub router9: Mutex<usage::UsageSnapshot>,
+    pub deepseek: Mutex<usage::UsageSnapshot>,
     /// Provider glyph cache, collected at launch and again on a tray refresh
     pub glyphs: Mutex<std::collections::HashMap<String, glyphs::Glyph>>,
     /// Working state of the non-Claude providers (Cursor reports it; Codex and Antigravity are inferred from recent writes)
@@ -105,7 +115,7 @@ fn island_anchor_y(expanded: bool, wh: i32, notch_scale: f64) -> i32 {
 fn visible_providers(app: &AppHandle) -> usize {
     let st = app.state::<AppState>();
     let mut n = 1;
-    for m in [&st.codex, &st.cursor, &st.antigravity, &st.commandcode, &st.router9] {
+    for m in [&st.codex, &st.cursor, &st.antigravity, &st.commandcode, &st.router9, &st.deepseek] {
         if m.lock().map(|s| s.status != "absent").unwrap_or(false) {
             n += 1;
         }
@@ -116,8 +126,12 @@ fn visible_providers(app: &AppHandle) -> usize {
 /// Logical window size for the current mode: open or collapsed to the handle, docked on a side edge
 /// (tall) or lying along a top/bottom edge or floating free (wide island). A tall column has to fit
 /// every cell — six providers need ~586 px, well past the 460 the notch used when there were four.
-fn notch_size(edge: &str, free_move: bool, expanded: bool, notch_scale: f64, cells: usize) -> (f64, f64) {
+fn notch_size(edge: &str, free_move: bool, expanded: bool, peek: u8, notch_scale: f64, cells: usize) -> (f64, f64) {
     let horizontal = free_move || edge_is_horizontal(edge);
+    if !expanded && peek > 0 {
+        let (w, h) = if peek >= 2 { (TOAST_W, TOAST_H) } else { (LIVE_W, LIVE_H) };
+        return (w * notch_scale, h * notch_scale);
+    }
     let (w, h) = match (expanded, horizontal) {
         (true, true) => (ISLAND_W, ISLAND_H),
         (true, false) => {
@@ -158,7 +172,8 @@ pub fn place_notch(app: &AppHandle) {
         // So the physical size is pinned straight from mon.scale_factor() before placing the
         // window; if it still reports a different scale afterwards, it is pinned once more.
         let ms = mon.scale_factor();
-        let (nw, nh) = notch_size(&edge, free_move, expanded, notch_scale, cells);
+        let peek = PEEK.load(std::sync::atomic::Ordering::Relaxed);
+        let (nw, nh) = notch_size(&edge, free_move, expanded, peek, notch_scale, cells);
         let target = tauri::PhysicalSize::new((nw * ms).round() as u32, (nh * ms).round() as u32);
         let _ = w.set_size(target);
         // Position from the window's measured physical size — deriving it from the scale factor
@@ -221,6 +236,21 @@ fn notch_expand(app: AppHandle, on: bool) {
         return;
     }
     place_notch(&app);
+}
+
+/// The page asks for the closed window to grow into a Live Activity (1) or alert (2) pill, or back to
+/// the handle (0). While open or being dragged the size is someone else's business; the choice is
+/// kept and applied the next time the notch closes.
+#[tauri::command]
+fn notch_peek(app: AppHandle, kind: u8) {
+    use std::sync::atomic::Ordering;
+    let kind = kind.min(2);
+    if PEEK.swap(kind, Ordering::Relaxed) == kind {
+        return;
+    }
+    if !EXPANDED.load(Ordering::Relaxed) && !DRAGGING.load(Ordering::SeqCst) {
+        place_notch(&app);
+    }
 }
 
 /// Keeps a free-floating drag inside the combined bounds of every attached monitor (not just the
@@ -463,6 +493,12 @@ fn refresh_usage(app: AppHandle) {
     antigravity::request_refresh();
     commandcode::request_refresh();
     router9::request_refresh();
+    deepseek::request_refresh();
+}
+
+#[tauri::command]
+fn get_deepseek(state: tauri::State<AppState>) -> usage::UsageSnapshot {
+    state.deepseek.lock().unwrap().clone()
 }
 
 #[tauri::command]
@@ -546,6 +582,7 @@ fn open_provider_page(provider: String) {
         "gemini" => "https://antigravity.google",
         "commandcode" => "https://commandcode.ai",
         "router9" => "http://127.0.0.1:20128/dashboard",
+        "deepseek" => "https://platform.deepseek.com/usage",
         _ => "https://claude.ai/settings/usage",
     };
     let mut cmd = std::process::Command::new("cmd");
@@ -832,6 +869,7 @@ fn main() {
             antigravity: Mutex::new(antigravity::load_persisted()),
             commandcode: Mutex::new(commandcode::load_persisted()),
             router9: Mutex::new(router9::load_persisted()),
+            deepseek: Mutex::new(deepseek::load_persisted()),
             glyphs: Mutex::new(Default::default()),
             activity: Mutex::new(Vec::new()),
         })
@@ -843,8 +881,12 @@ fn main() {
             get_antigravity,
             get_commandcode,
             get_router9,
+            get_deepseek,
             get_config,
             notch_expand,
+            notch_peek,
+            settings::save_deepseek_key,
+            settings::remove_deepseek_key,
             settings::open_settings,
             settings::settings_status,
             settings::save_commandcode_key,
@@ -884,6 +926,7 @@ fn main() {
             antigravity::start(handle.clone());
             commandcode::start(handle.clone());
             router9::start(handle.clone());
+            deepseek::start(handle.clone());
             activity::start(handle.clone());
             // Collecting glyphs may read icon resources out of a few executables; do it off the main thread and push when done
             let gh = handle.clone();
