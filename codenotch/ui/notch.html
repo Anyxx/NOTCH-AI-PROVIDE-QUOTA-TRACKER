@@ -16,8 +16,11 @@
     /* Overshoot on the way out, settle on the way back: the difference is what reads as liquid rather than mechanical */
     --spring:cubic-bezier(.34,1.8,.5,1);
     --ease:cubic-bezier(.22,1,.36,1);
-    --ink:#000;--stroke:#2e2e2e;
+    --ink:#000;--stroke:#2e2e2e;--cardbg:#0a0a0a;
   }
+  /* Themes (Settings → Providers & layout, or the tray): only the surfaces change, never the quota colours */
+  #root[data-theme="graphite"]{--ink:#1b1b1e;--stroke:#34343a;--cardbg:#16161a}
+  #root[data-theme="glass"]{--ink:rgba(16,16,20,.74);--stroke:rgba(255,255,255,.16);--cardbg:rgba(12,12,16,.9)}
 
   /* ---------- The resting handle ---------- */
   #handle{
@@ -197,7 +200,7 @@
   /* ---------- Hover card ---------- */
   #card{
     position:absolute;width:246px;max-width:calc(100% - 20px);--tail:50%;
-    background:#0a0a0a;border-radius:16px;padding:16px;
+    background:var(--cardbg);border-radius:16px;padding:16px;
     overflow-wrap:anywhere;min-width:0;
     /* never taller than the room it is given; what does not fit scrolls (the wheel reaches an
        unfocused window on Windows 10+), so a long card never has to slide over the pill to fit */
@@ -211,10 +214,10 @@
   #card.show{opacity:1;pointer-events:auto;transform:none}
   #card::after{content:"";position:absolute;border:8px solid transparent}
   /* The tail points back at the pill, on whichever side the card had to open */
-  #card.tail-r::after{right:-8px;top:var(--tail);transform:translateY(-50%);border-right:none;border-left:10px solid #0a0a0a}
-  #card.tail-l::after{left:-8px;top:var(--tail);transform:translateY(-50%);border-left:none;border-right:10px solid #0a0a0a}
-  #card.tail-t::after{top:-8px;left:var(--tail);transform:translateX(-50%);border-top:none;border-bottom:10px solid #0a0a0a}
-  #card.tail-b::after{bottom:-8px;left:var(--tail);transform:translateX(-50%);border-bottom:none;border-top:10px solid #0a0a0a}
+  #card.tail-r::after{right:-8px;top:var(--tail);transform:translateY(-50%);border-right:none;border-left:10px solid var(--cardbg)}
+  #card.tail-l::after{left:-8px;top:var(--tail);transform:translateY(-50%);border-left:none;border-right:10px solid var(--cardbg)}
+  #card.tail-t::after{top:-8px;left:var(--tail);transform:translateX(-50%);border-top:none;border-bottom:10px solid var(--cardbg)}
+  #card.tail-b::after{bottom:-8px;left:var(--tail);transform:translateX(-50%);border-bottom:none;border-top:10px solid var(--cardbg)}
   .c-head{display:flex;align-items:center;gap:8px;margin-bottom:4px}
   .c-title{font-size:14px;font-weight:700}
   .c-sub{font-size:11px;color:#808080;margin-bottom:10px}
@@ -229,6 +232,12 @@
   .c-sessions{margin-top:12px;border-top:1px solid #1e1e1e;padding-top:8px}
   .s-row{display:flex;align-items:center;gap:6px;font-size:11px;color:#b0b0b3;padding:2px 0}
   .s-dot{width:6px;height:6px;border-radius:3px;flex:0 0 auto}
+  /* Claude sessions: click to bring its terminal (or Claude Desktop) to the front */
+  .s-jump{cursor:pointer;border-radius:6px;margin:0 -6px;padding:3px 6px;transition:background .15s}
+  .s-jump:hover{background:#1b1b1f;color:#fff}
+  .s-title{min-width:0;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .s-go{color:#55555c;font-size:11px;opacity:0;transition:opacity .15s}
+  .s-jump:hover .s-go{opacity:1}
   /* Quota Tracker layout (9Router, several Command Code accounts): a block per account, a compact row per quota */
   .q-group{margin-top:12px;padding-top:10px;border-top:1px solid #1c1c1c}
   .q-group:first-child{margin-top:8px;border-top:none;padding-top:0}
@@ -360,7 +369,11 @@ function providers(){
   if(ccSnap.status!=='absent') list.push({id:'commandcode',name:'Command Code',glyph:'Cc',snap:ccSnap});
   if(r9Snap.status!=='absent') list.push({id:'router9',name:'9Router',glyph:'9r',snap:r9Snap});
   if(dsSnap.status!=='absent') list.push({id:'deepseek',name:'DeepSeek',glyph:'Ds',snap:dsSnap});
-  return list;
+  // Layout from the settings window: hidden cells left out, the rest in the chosen order (unlisted ids keep theirs, after)
+  const hid=cfg.hidden_providers||[], ord=cfg.provider_order||[];
+  const rank=id=>{ const i=ord.indexOf(id); return i<0 ? 100+list.findIndex(p=>p.id===id) : i; };
+  const shown=list.filter(p=>!hid.includes(p.id)).sort((a,b)=>rank(a.id)-rank(b.id));
+  return shown.length ? shown : list.slice(0,1); // never an empty pill: Claude stays when everything else is hidden
 }
 function headlineOf(snap){
   if(!snap.windows.length) return null;
@@ -654,7 +667,7 @@ function resetCopy(ms){
   if(diff<=0) return 'Resetting…';
   if(diff<60*60*1000) return `Resets in ${Math.max(1,Math.round(diff/60000))} min`;
   const d=new Date(ms);
-  const t=d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+  const t=hm(ms); // 24-hour, like every other time on the notch
   if(diff<24*60*60*1000) return `Resets at ${t}`;
   return `Resets ${d.toLocaleDateString('en-US',{weekday:'short'})} ${t}`;
 }
@@ -766,7 +779,7 @@ function renderCard(){
     if(act.length){
       html+=`<div class="c-sessions">`;
       for(const s of act.slice(0,5)){
-        html+=`<div class="s-row"><span class="s-dot" style="background:${STATE_DOT[s.state]||'#666'}"></span>${esc(s.title)}</div>`;
+        html+=`<div class="s-row s-jump" data-sid="${esc(s.id)}" title="Jump to this session"><span class="s-dot" style="background:${STATE_DOT[s.state]||'#666'}"></span><span class="s-title">${esc(s.title)}</span><span class="s-go">↗</span></div>`;
       }
       html+=`</div>`;
     }
@@ -948,6 +961,12 @@ document.addEventListener('mouseout',e=>{ // relatedTarget null = the cursor lef
   if(!e.relatedTarget){ clearTimeout(dwellTimer); dwellTimer=null; if(state==='open'){ if(hideLogged++<5) jslog('mouseout left the page -> collapse'); scheduleHide(); } }
 });
 listen('pointer_left',()=>{clearTimeout(hideTimer);hideCard();closeNotch();}).catch(()=>{});
+card.addEventListener('click',e=>{
+  const row=e.target.closest('[data-sid]');
+  if(!row) return;
+  invoke('focus_session',{id:row.dataset.sid}).then(ok=>{ if(ok===false) notice('That session’s window could not be found'); }).catch(()=>{});
+  hideCard(); closeNotch();
+});
 // Card content changes change its height -> report the hot rectangles again
 listen('usage',()=>{if(card.classList.contains('show'))armWatchdog();}).catch(()=>{});
 listen('state',()=>{if(card.classList.contains('show'))armWatchdog();}).catch(()=>{});
@@ -1015,6 +1034,7 @@ function applyCfg(){
   root.style.opacity = (cfg.opacity!=null?cfg.opacity:1);
   root.dataset.edge = cfg.edge||'right';
   root.dataset.mode = cfg.drag_enabled?'free':'dock';
+  root.dataset.theme = cfg.theme||'dark';
   pill.dataset.cells=''; // the column/row swap changes the layout: rebuild the cells on the next render
   fitZoom(); // the mode decides the design width, so re-measure now that it is known
   renderRing();

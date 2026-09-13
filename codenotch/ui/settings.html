@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="UTF-8">
-<title>Codenotch — API keys</title>
+<title>Codenotch — Settings</title>
 <style>
   :root{
     --bg:#0b0b0d;--card:#141417;--line:#26262b;--text:#ececf0;--mute:#8a8a93;
@@ -78,12 +78,32 @@
   td{border-top:1px solid var(--line);padding:6px 4px;vertical-align:top;color:#b9b9c2}
   td:first-child{color:var(--warn);width:46%}
   footer{color:#5c5c66;font-size:11px;text-align:center;margin-top:2px}
+  select{flex:1;background:#0d0d10;border:1px solid var(--line);color:var(--text);border-radius:9px;padding:8px 10px;font:inherit;outline:none}
+  .prov{display:flex;align-items:center;gap:10px;background:#101013;border:1px solid var(--line);border-radius:10px;padding:6px 8px 6px 10px}
+  .prov input[type=checkbox]{flex:0 0 auto;width:16px;height:16px;accent-color:#ececf0;cursor:pointer}
+  .prov .pname{flex:1;font-size:12.5px;font-weight:600}
+  .prov.off .pname{color:var(--mute);font-weight:400;text-decoration:line-through}
+  .prov button{padding:3px 9px;font-size:12px}
 </style>
 </head>
 <body>
 <main>
-  <h1>API keys</h1>
-  <p class="sub">Connect providers that Codenotch can't find on this PC by itself.</p>
+  <h1>Settings</h1>
+  <p class="sub">Arrange the notch, and connect providers Codenotch can't find on this PC by itself.</p>
+
+  <section class="card" id="layoutCard">
+    <div class="card-h"><h2>Providers &amp; layout</h2><span class="chip" id="layoutChip">Saved</span></div>
+    <p class="desc">Order the cells with the arrows and untick the ones you don't want on the notch. Changes apply right away.</p>
+    <div class="acct-list" id="provList"></div>
+    <label for="theme">Theme</label>
+    <div class="field">
+      <select id="theme">
+        <option value="dark">Dark</option>
+        <option value="graphite">Graphite</option>
+        <option value="glass">Glass (see-through)</option>
+      </select>
+    </div>
+  </section>
 
   <section class="card">
     <div class="card-h"><h2>Command Code</h2><span class="chip" id="ccChip">…</span></div>
@@ -381,6 +401,50 @@ for(const pre of document.querySelectorAll('pre[data-copy]')){
   };
   pre.appendChild(b);
 }
+
+// ---- Providers & layout: order, visibility, theme — saved on every change ----
+const PROVIDERS = [['claude','Claude'],['codex','Codex'],['cursor','Cursor'],['gemini','Antigravity'],
+  ['commandcode','Command Code'],['router9','9Router'],['deepseek','DeepSeek']];
+let layout = {order: PROVIDERS.map(p => p[0]), hidden: [], theme: 'dark'};
+function orderedIds(order){
+  const known = PROVIDERS.map(p => p[0]);
+  return [...order.filter(id => known.includes(id)), ...known.filter(id => !order.includes(id))];
+}
+function renderLayout(){
+  const box = $('provList'); box.innerHTML = '';
+  const ids = layout.order;
+  ids.forEach((id, i) => {
+    const name = (PROVIDERS.find(p => p[0] === id) || [id, id])[1];
+    const off = layout.hidden.includes(id);
+    const row = document.createElement('div'); row.className = 'prov' + (off ? ' off' : '');
+    row.innerHTML = `<input type="checkbox" ${off ? '' : 'checked'} title="Show on the notch"><span class="pname"></span>`
+      + `<button class="ghost" ${i === 0 ? 'disabled' : ''} title="Move up">↑</button>`
+      + `<button class="ghost" ${i === ids.length - 1 ? 'disabled' : ''} title="Move down">↓</button>`;
+    row.querySelector('.pname').textContent = name;
+    row.querySelector('input').onchange = e => {
+      layout.hidden = e.target.checked ? layout.hidden.filter(h => h !== id) : [...layout.hidden, id];
+      saveLayout();
+    };
+    const [up, down] = row.querySelectorAll('button');
+    up.onclick = () => { [ids[i-1], ids[i]] = [ids[i], ids[i-1]]; saveLayout(); };
+    down.onclick = () => { [ids[i+1], ids[i]] = [ids[i], ids[i+1]]; saveLayout(); };
+    box.appendChild(row);
+  });
+  $('theme').value = layout.theme;
+}
+async function saveLayout(){
+  renderLayout();
+  $('layoutChip').textContent = 'Saving…'; $('layoutChip').className = 'chip';
+  try {
+    await invoke('save_layout', {order: layout.order, hidden: layout.hidden, theme: layout.theme});
+    $('layoutChip').textContent = 'Saved'; $('layoutChip').className = 'chip ok';
+  } catch(e){ $('layoutChip').textContent = 'Not saved'; }
+}
+$('theme').onchange = e => { layout.theme = e.target.value; saveLayout(); };
+invoke('get_config').then(c => {
+  layout = {order: orderedIds(c.provider_order || []), hidden: c.hidden_providers || [], theme: c.theme || 'dark'};
+  renderLayout();
+}).catch(() => renderLayout());
 
 window.addEventListener('focus', refresh); // e.g. after running `cmdc login` in a terminal
 refresh();

@@ -1,6 +1,6 @@
 [package]
 name = "codenotch"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 description = "Codenotch for Windows — usage notch for Claude, Codex, Cursor and Antigravity"
 license = "MIT"
@@ -37,4 +37,5 @@ windows = { version = "0.58", features = [
   "Win32_System_Threading",
   "Win32_Globalization",
   "Win32_System_Console",
+  "Win32_UI_Shell", # SHQueryUserNotificationState: is a full-screen app or presentation in front?
 ] }

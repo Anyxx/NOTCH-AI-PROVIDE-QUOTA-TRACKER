@@ -29,7 +29,7 @@ use tauri::{AppHandle, Emitter, Manager};
 /// Logical size of the notch window when open on a side edge: the 70 pt pill column plus room for the hover card.
 pub const NOTCH_W: f64 = 340.0;
 /// Hand-bumped build tag, written to run.log at startup so a log can always be matched to the exe that wrote it.
-pub const BUILD: &str = "r32";
+pub const BUILD: &str = "r33";
 pub const NOTCH_H: f64 = 460.0; // 300 clipped the card once it held three window blocks plus the session list
 /// Open size in island form (top/bottom edge, or free-floating): cells run in a row, card sits under them.
 /// Wide enough for six cells (6×56 + 5×18 + padding = 466) plus room for the card to sit under an end cell.
@@ -114,13 +114,39 @@ fn island_anchor_y(expanded: bool, wh: i32, notch_scale: f64) -> i32 {
 /// something other than "absent" (same rule as `providers()` in the page).
 fn visible_providers(app: &AppHandle) -> usize {
     let st = app.state::<AppState>();
-    let mut n = 1;
-    for m in [&st.codex, &st.cursor, &st.antigravity, &st.commandcode, &st.router9, &st.deepseek] {
-        if m.lock().map(|s| s.status != "absent").unwrap_or(false) {
+    let hidden = st.cfg.lock().map(|c| c.hidden_providers.clone()).unwrap_or_default();
+    let shown = |id: &str| !hidden.iter().any(|h| h == id);
+    let mut n = usize::from(shown("claude"));
+    for (id, m) in [
+        ("codex", &st.codex),
+        ("cursor", &st.cursor),
+        ("gemini", &st.antigravity),
+        ("commandcode", &st.commandcode),
+        ("router9", &st.router9),
+        ("deepseek", &st.deepseek),
+    ] {
+        if shown(id) && m.lock().map(|s| s.status != "absent").unwrap_or(false) {
             n += 1;
         }
     }
-    n
+    n.max(1) // the page never hides every cell: Claude comes back when nothing else is left
+}
+
+/// Provider order, hidden providers and theme, from the settings window's layout card
+#[tauri::command]
+fn save_layout(app: AppHandle, order: Vec<String>, hidden: Vec<String>, theme: String) {
+    {
+        let st = app.state::<AppState>();
+        let mut c = st.cfg.lock().unwrap();
+        c.provider_order = order;
+        c.hidden_providers = hidden;
+        if ["dark", "graphite", "glass"].contains(&theme.as_str()) {
+            c.theme = theme;
+        }
+        config::save(&c);
+    }
+    emit_config(&app);
+    place_notch(&app);
 }
 
 /// Logical window size for the current mode: open or collapsed to the handle, docked on a side edge
@@ -465,6 +491,57 @@ fn noactivate(app: &AppHandle) {
 }
 #[cfg(not(windows))]
 fn noactivate(_app: &AppHandle) {}
+
+/// Is a full-screen app (game, video, F11 browser) or presentation in front? Windows' own answer —
+/// the same signal it uses to hold back notifications — rather than guessing from window rectangles.
+#[cfg(windows)]
+fn fullscreen_busy() -> bool {
+    use windows::Win32::UI::Shell::{
+        SHQueryUserNotificationState, QUNS_BUSY, QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN,
+    };
+    matches!(unsafe { SHQueryUserNotificationState() },
+        Ok(s) if s == QUNS_BUSY || s == QUNS_RUNNING_D3D_FULL_SCREEN || s == QUNS_PRESENTATION_MODE)
+}
+#[cfg(not(windows))]
+fn fullscreen_busy() -> bool {
+    false
+}
+
+/// Shows the notch without activating it: a plain show() may take focus from the app in front
+#[cfg(windows)]
+fn set_shown(w: &tauri::WebviewWindow, on: bool) {
+    use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE, SW_SHOWNOACTIVATE};
+    if let Ok(h) = w.hwnd() {
+        let hwnd = windows::Win32::Foundation::HWND(h.0 as isize as *mut core::ffi::c_void);
+        unsafe {
+            let _ = ShowWindow(hwnd, if on { SW_SHOWNOACTIVATE } else { SW_HIDE });
+        }
+    }
+}
+#[cfg(not(windows))]
+fn set_shown(w: &tauri::WebviewWindow, on: bool) {
+    let _ = if on { w.show() } else { w.hide() };
+}
+
+/// Gets out of the way of full-screen apps (tray: Hide during full-screen apps), checked once a second
+fn start_fullscreen_watch(app: AppHandle) {
+    std::thread::spawn(move || {
+        let mut hidden = false;
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(1000));
+            let enabled = app.state::<AppState>().cfg.lock().map(|c| c.hide_fullscreen).unwrap_or(false);
+            let hide = enabled && !DRAGGING.load(std::sync::atomic::Ordering::SeqCst) && fullscreen_busy();
+            if hide == hidden {
+                continue;
+            }
+            hidden = hide;
+            if let Some(w) = app.get_webview_window("notch") {
+                set_shown(&w, !hide);
+            }
+            applog(&format!("full-screen watch: notch {}", if hide { "hidden" } else { "shown" }));
+        }
+    });
+}
 
 // ---------------- commands ----------------
 
@@ -885,6 +962,7 @@ fn main() {
             get_config,
             notch_expand,
             notch_peek,
+            save_layout,
             settings::save_deepseek_key,
             settings::remove_deepseek_key,
             settings::open_settings,
@@ -932,6 +1010,7 @@ fn main() {
             let gh = handle.clone();
             std::thread::spawn(move || reload_glyphs(&gh));
             start_pointer_watchdog(handle.clone());
+            start_fullscreen_watch(handle.clone());
             // Seen-clears-it scan
             let acker = handle.clone();
             std::thread::spawn(move || {

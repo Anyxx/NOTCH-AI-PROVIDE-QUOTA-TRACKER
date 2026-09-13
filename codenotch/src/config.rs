@@ -45,6 +45,22 @@ pub struct Config {
     /// left, the next reset on the right (tray toggle)
     #[serde(default)]
     pub compact: bool,
+    /// Hide the notch while a full-screen app, game or presentation is in front (tray toggle)
+    #[serde(default = "default_true")]
+    pub hide_fullscreen: bool,
+    /// "dark" | "graphite" | "glass"
+    #[serde(default = "default_theme")]
+    pub theme: String,
+    /// Provider ids in the order the pill shows them; ids not listed keep their built-in order after these
+    #[serde(default)]
+    pub provider_order: Vec<String>,
+    /// Provider ids the pill leaves out
+    #[serde(default)]
+    pub hidden_providers: Vec<String>,
+}
+
+fn default_theme() -> String {
+    "dark".into()
 }
 
 fn default_true() -> bool {
@@ -90,6 +106,10 @@ impl Default for Config {
             live_activity: true,
             alert_levels: default_alert_levels(),
             compact: false,
+            hide_fullscreen: true,
+            theme: default_theme(),
+            provider_order: Vec::new(),
+            hidden_providers: Vec::new(),
         }
     }
 }

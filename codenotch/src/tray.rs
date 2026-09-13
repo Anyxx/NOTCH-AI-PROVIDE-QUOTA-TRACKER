@@ -57,11 +57,33 @@ pub fn build_menu(app: &AppHandle, lang: &str) -> tauri::Result<Menu<Wry>> {
         .checked(crate::autostart::is_enabled())
         .build(app)?;
 
-    let (free_move, opacity, notch_scale, live, levels, compact) = {
+    let (free_move, opacity, notch_scale, live, levels, compact, hide_fs, theme) = {
         let st = app.state::<crate::AppState>();
         let c = st.cfg.lock().unwrap();
-        (c.drag_enabled, c.opacity, c.scale, c.live_activity, c.alert_levels.clone(), c.compact)
+        (c.drag_enabled, c.opacity, c.scale, c.live_activity, c.alert_levels.clone(), c.compact, c.hide_fullscreen, c.theme.clone())
     };
+    // Which build is running, at a glance: installers of different rounds otherwise look identical
+    let version = MenuItemBuilder::with_id("version", format!("Codenotch v{} ({})", env!("CARGO_PKG_VERSION"), crate::BUILD))
+        .enabled(false)
+        .build(app)?;
+    let hide_fs_item = CheckMenuItemBuilder::with_id("hide-fullscreen", tr(lang, "hide_fullscreen"))
+        .checked(hide_fs)
+        .build(app)?;
+    let theme_items: Vec<_> = ["dark", "graphite", "glass"]
+        .iter()
+        .map(|t| {
+            let key = match *t {
+                "graphite" => "theme_graphite",
+                "glass" => "theme_glass",
+                _ => "theme_dark",
+            };
+            CheckMenuItemBuilder::with_id(format!("theme-{t}"), tr(lang, key)).checked(theme == *t).build(app)
+        })
+        .collect::<tauri::Result<_>>()?;
+    let theme_refs: Vec<&dyn tauri::menu::IsMenuItem<Wry>> =
+        theme_items.iter().map(|i| i as &dyn tauri::menu::IsMenuItem<Wry>).collect();
+    let theme_menu = SubmenuBuilder::new(app, tr(lang, "theme")).items(&theme_refs).build()?;
+    let layout = MenuItemBuilder::with_id("layout", tr(lang, "layout")).build(app)?;
     let compact_item = CheckMenuItemBuilder::with_id("compact", tr(lang, "compact"))
         .checked(compact)
         .build(app)?;
@@ -106,7 +128,10 @@ pub fn build_menu(app: &AppHandle, lang: &str) -> tauri::Result<Menu<Wry>> {
     let keys = MenuItemBuilder::with_id("api-keys", tr(lang, "api_keys")).build(app)?;
     let quit = MenuItemBuilder::with_id("quit", tr(lang, "quit")).build(app)?;
     MenuBuilder::new(app)
+        .item(&version)
+        .separator()
         .item(&keys)
+        .item(&layout)
         .items(&[&install, &uninstall])
         .separator()
         .item(&lang_menu)
@@ -116,6 +141,8 @@ pub fn build_menu(app: &AppHandle, lang: &str) -> tauri::Result<Menu<Wry>> {
         .item(&live_item)
         .item(&compact_item)
         .item(&alerts_menu)
+        .item(&hide_fs_item)
+        .item(&theme_menu)
         .item(&opacity_menu)
         .item(&scale_menu)
         .item(&open_data)
@@ -142,7 +169,26 @@ fn handle(app: &AppHandle, id: &str) {
     match id {
         "install" => notice(app, hooks_install::install()),
         "uninstall" => notice(app, hooks_install::uninstall()),
-        "api-keys" => crate::settings::open(app),
+        "api-keys" | "layout" => crate::settings::open(app), // the layout card sits at the top of that window
+        "hide-fullscreen" => {
+            {
+                let st = app.state::<crate::AppState>();
+                let mut c = st.cfg.lock().unwrap();
+                c.hide_fullscreen = !c.hide_fullscreen;
+                crate::config::save(&c);
+            }
+            refresh_menu(app);
+        }
+        _ if id.starts_with("theme-") => {
+            {
+                let st = app.state::<crate::AppState>();
+                let mut c = st.cfg.lock().unwrap();
+                c.theme = id[6..].to_string();
+                crate::config::save(&c);
+            }
+            crate::emit_config(app);
+            refresh_menu(app);
+        }
         "reset" => crate::reset_bar(app),
         "open-data" => {
             let dir = crate::config::config_path().parent().map(|p| p.to_path_buf()).unwrap_or_default();

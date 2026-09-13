@@ -13,7 +13,7 @@ pub fn open(app: &AppHandle) {
         return;
     }
     let built = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
-        .title("Codenotch — API keys")
+        .title("Codenotch — Settings")
         .inner_size(500.0, 760.0)
         .resizable(false)
         .center()
