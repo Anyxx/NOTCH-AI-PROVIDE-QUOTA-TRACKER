@@ -818,8 +818,10 @@ fn focus_session(app: AppHandle, id: String) -> bool {
         let store = st.store.lock().unwrap();
         store.ppid_of(&id)
     };
+    // A session with no terminal of its own (Claude Desktop's Code tab, or the terminal was closed)
+    // lands on Claude Desktop instead of "not found"
     match ppid {
-        Some(p) => focus::focus_terminal(p),
+        Some(p) => focus::focus_terminal(p) || focus::focus_claude_desktop(),
         None => focus::focus_claude_desktop(),
     }
 }

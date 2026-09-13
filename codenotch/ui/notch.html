@@ -345,8 +345,10 @@ function workState(id){
   if(id==='claude'){
     if(stateSnap.agg==='running') return 'running';
     if(stateSnap.agg==='attention') return 'attention';
-    // The engine cannot see cloud sessions: fall back to the desktop app's network activity
-    if(activity.some(a=>a.provider==='claude'&&a.state==='busy')) return 'running';
+    // The desktop app's network traffic is only a guess (any chat streaming in Claude Desktop trips
+    // it), so it counts only when the hooks see no session at all. A session the hooks report as
+    // done or idle is the better witness: "working" stuck on after the work was finished otherwise.
+    if(!(stateSnap.sessions||[]).length && activity.some(a=>a.provider==='claude'&&a.state==='busy')) return 'running';
     return 'idle';
   }
   const acts=activity.filter(a=>a.provider===id);
@@ -468,13 +470,26 @@ function liveInfo(){
   const p=att||run[0]; if(!p) return null;
   const h=headlineOf(p.snap), metered=h&&h.count==null;
   const title=att?`${p.name} needs you`:`${p.name} working`;
-  const sub=att?'Waiting for your reply':(run.length>1?`+${run.length-1} more working`:(metered&&h.resets_at?resetCopy(h.resets_at):''));
+  // Say *what* is working — the session, project or file — not just who
+  const what=workDetail(p.id);
+  const sub=att ? (what||'Waiting for your reply')
+    : [what, run.length>1?`+${run.length-1} more`:''].filter(Boolean).join(' · ') || (metered&&h.resets_at?resetCopy(h.resets_at):'');
   const ring=att
     ?`<svg class="lv-ring arc-pulse" viewBox="0 0 28 28"><circle cx="14" cy="14" r="12.5" fill="none" stroke="${AMBER}" stroke-width="2"/></svg>`
     :`<svg class="lv-ring arc-spin" viewBox="0 0 28 28"><circle cx="14" cy="14" r="12.5" fill="none" stroke="${RUNGREEN}" stroke-width="2" stroke-dasharray="20 79"/></svg>`;
   return `<span class="lv-ic">${ring}${glyphHtml(p,true)||esc(p.glyph)}</span>`
     +`<div class="lv-txt"><div class="lv-t">${esc(title)}</div>${sub?`<div class="lv-s">${esc(sub)}</div>`:''}</div>`
     +(metered?`<span class="lv-v" style="color:${tone(h.used)}">${Math.round(h.used*100)}%</span>`:'');
+}
+function workDetail(id){
+  if(id==='claude'){
+    const ss=stateSnap.sessions||[];
+    const s=ss.find(s=>s.state==='attention')||ss.find(s=>s.state==='running');
+    if(s) return s.title;
+    return activity.some(a=>a.provider==='claude'&&a.state==='busy') ? 'Claude Desktop · streaming' : '';
+  }
+  const a=activity.find(a=>a.provider===id&&a.state==='waiting')||activity.find(a=>a.provider===id&&a.state==='busy');
+  return a ? [a.name,a.detail].filter(Boolean).join(' · ') : '';
 }
 function updatePeek(){
   const html = toastNow ? toastNow : (liveInfo() || compactInfo());
@@ -592,11 +607,14 @@ function sinceReset(a){
   return a.slice(i);
 }
 function forecast(key,w){
+  // Without a reset time there is nothing to measure the pace against: "runs out Mon 06:55" for a
+  // 5-hour session whose reset is simply unknown (Claude read from Claude Desktop) only misleads
+  if(!w.resets_at) return null;
   const now=Date.now();
   const seg=sinceReset(hist[key]||[]).filter(p=>now-p[0]<6*36e5); // pace over the last 6 h at most
   if(seg.length<3) return null;
   const first=seg[0], last=seg[seg.length-1], dt=last[0]-first[0];
-  if(dt<30*6e4) return null;
+  if(dt<60*6e4) return null; // an hour at least, or two close readings make a wild slope
   const rate=(last[1]-first[1])/dt; // share per ms
   if(rate<=1e-12) return {ok:true,text:'Barely moving lately — no risk of running out'};
   const eta=now+(1-Math.min(w.used,1))/rate;
@@ -605,7 +623,7 @@ function forecast(key,w){
 }
 function spark(key){
   const now=Date.now(), a=(hist[key]||[]).filter(p=>now-p[0]<864e5);
-  if(a.length<2) return '';
+  if(a.length<2 || a[a.length-1][0]-a[0][0]<36e5) return ''; // under an hour of data is a speck at the right edge
   const W=214, H=24, t0=now-864e5;
   const pts=a.map(([t,u])=>`${((t-t0)/864e5*W).toFixed(1)},${(H-1-Math.min(u,1)*(H-2)).toFixed(1)}`).join(' ');
   return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><polyline points="${pts}" fill="none" stroke="#5d5d66" stroke-width="1.5" vector-effect="non-scaling-stroke"/></svg>`
@@ -964,8 +982,11 @@ listen('pointer_left',()=>{clearTimeout(hideTimer);hideCard();closeNotch();}).ca
 card.addEventListener('click',e=>{
   const row=e.target.closest('[data-sid]');
   if(!row) return;
-  invoke('focus_session',{id:row.dataset.sid}).then(ok=>{ if(ok===false) notice('That session’s window could not be found'); }).catch(()=>{});
   hideCard(); closeNotch();
+  // Reported as an island alert: the bottom-left notice sat right on top of the Live Activity pill
+  invoke('focus_session',{id:row.dataset.sid}).then(ok=>{
+    if(ok===false) toast('!',AMBER,'Couldn’t bring that session to the front','Its window may be closed or hidden in the tray');
+  }).catch(()=>{});
 });
 // Card content changes change its height -> report the hot rectangles again
 listen('usage',()=>{if(card.classList.contains('show'))armWatchdog();}).catch(()=>{});
