@@ -175,6 +175,27 @@
   .c-sessions{margin-top:12px;border-top:1px solid #1e1e1e;padding-top:8px}
   .s-row{display:flex;align-items:center;gap:6px;font-size:11px;color:#b0b0b3;padding:2px 0}
   .s-dot{width:6px;height:6px;border-radius:3px;flex:0 0 auto}
+  /* Quota Tracker layout (9Router): a block per account, a compact row per quota. Several accounts
+     outgrow any window, so this card scrolls — the wheel reaches an unfocused window on Windows 10+. */
+  #card.scroll{overflow-y:auto;scrollbar-width:thin;scrollbar-color:#333 transparent}
+  #card.scroll::-webkit-scrollbar{width:6px}
+  #card.scroll::-webkit-scrollbar-thumb{background:#333;border-radius:3px}
+  .q-group{margin-top:12px;padding-top:10px;border-top:1px solid #1c1c1c}
+  .q-group:first-child{margin-top:8px;border-top:none;padding-top:0}
+  .q-head{display:flex;align-items:center;gap:6px;min-width:0}
+  .q-head .mark{display:inline-flex;width:14px;height:14px;color:#e8e8ea;flex:0 0 auto}
+  .q-head .mark svg{width:14px;height:14px;fill:currentColor}
+  .q-head img{width:14px!important;height:14px!important;border-radius:3px;flex:0 0 auto}
+  .q-title{font-size:12.5px;font-weight:700;white-space:nowrap}
+  .q-plan{font-size:10px;color:#8a8a93;background:#1a1a1e;border-radius:99px;padding:1px 6px;white-space:nowrap}
+  .q-acct{font-size:11px;color:#808080;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-left:auto;min-width:0}
+  .q-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;column-gap:8px;align-items:baseline;margin-top:7px;font-size:11px}
+  .q-name{color:#e8e8ea;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .q-pct{color:#fff;font-weight:600;font-variant-numeric:tabular-nums}
+  .q-reset{color:#808080;font-size:10.5px;white-space:nowrap;font-variant-numeric:tabular-nums;min-width:52px;text-align:right}
+  .q-bar{grid-column:1/-1;height:3px;border-radius:2px;background:#2d2d2d;overflow:hidden;margin-top:4px}
+  .q-bar i{display:block;height:100%;border-radius:2px;transition:width .5s var(--ease)}
+  .q-msg{font-size:11px;color:#c8a24a;margin-top:6px;line-height:1.4}
   #notice{
     position:absolute;left:8px;bottom:6px;right:80px;font-size:10px;color:#808080;
     background:rgba(0,0,0,.85);border-radius:8px;padding:4px 8px;display:none
@@ -350,11 +371,44 @@ function ago(ms){
 
 const STATE_DOT={running:RUNGREEN,attention:AMBER,done:'#57c7ff'};
 
+/* Quota Tracker card (9Router): one block per account, rows as the dashboard shows them — the share
+   *left*, a bar of the same length, and the countdown. The ring keeps the notch's own convention
+   (share *used*), which is why the card says "left" out loud. */
+const QUOTA_GLYPH={claude:'claude',codex:'codex',antigravity:'gemini',cursor:'cursor'};
+function soonCopy(ms){
+  if(!ms) return '';
+  const m=Math.round((ms-Date.now())/60000);
+  if(m<=0) return 'now';
+  if(m<60) return `in ${m}m`;
+  const h=Math.floor(m/60);
+  return h<24 ? `in ${h}h ${m%60}m` : `in ${Math.floor(h/24)}d ${h%24}h`;
+}
+function renderGroups(groups){
+  let h='<div class="q-groups">';
+  for(const g of groups){
+    const gid=QUOTA_GLYPH[g.provider];
+    const icon=gid?glyphHtml({id:gid,name:g.title,glyph:''},true):'';
+    h+=`<div class="q-group"><div class="q-head">${icon}<span class="q-title">${esc(g.title)}</span>`
+      +`${g.plan?`<span class="q-plan">${esc(g.plan)}</span>`:''}<span class="q-acct">${esc(g.account)}</span></div>`;
+    for(const r of g.rows){
+      const left=Math.max(0,Math.min(100,Math.round((1-r.used)*100)));
+      h+=`<div class="q-row" title="${esc(r.amount||'')}"><span class="q-name">${esc(r.label)}</span>`
+        +`<span class="q-pct">${left}%</span><span class="q-reset">${soonCopy(r.resets_at)}</span>`
+        +`<span class="q-bar"><i style="width:${left}%;background:${tone(r.used)}"></i></span></div>`;
+    }
+    if(g.message) h+=`<div class="q-msg">${esc(g.message)}</div>`;
+    h+='</div>';
+  }
+  return h+'</div>';
+}
+
 let hoverId='claude';
 function renderCard(){
   const c=card;
   const p=providers().find(x=>x.id===hoverId)||providers()[0];
   const snap=p.snap;
+  const grouped=!!(snap.groups&&snap.groups.length);
+  c.classList.toggle('scroll', grouped);
   const headIcon=glyphHtml(p,true);
   let html=`<div class="c-head">${headIcon}<span class="c-title">${p.name} Usage</span></div>`;
   if(staleOf(snap)&&snap.fetched_at) html+=`<div class="c-sub">Updated ${ago(snap.fetched_at)}</div>`;
@@ -364,6 +418,10 @@ function renderCard(){
     // The notch cannot take keyboard focus, so the key is typed in the API-keys window instead
     if(p.id==='commandcode'||p.id==='router9')
       html+=`<button onclick="invoke('open_settings')" style="margin-top:10px;font:600 12px 'Segoe UI',system-ui,sans-serif;background:#ececf0;color:#0b0b0d;border:0;border-radius:8px;padding:7px 12px;cursor:pointer">Add API key…</button>`;
+  }else if(grouped){
+    html+=`<div class="c-sub">Quota left per account</div>`;
+    html+=renderGroups(snap.groups);
+    if(snap.note) html+=`<div class="c-note">${esc(snap.note)}</div>`;
   }else if(!snap.windows.length){
     html+=`<div class="c-note">${snap.note||'Waiting for first reading…'}</div>`;
   }else{

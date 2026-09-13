@@ -59,6 +59,25 @@ pub struct LimitWindow {
     /// The number is ours, not the vendor's (upstream fidelity=.derived) — the card adds a ~ prefix
     #[serde(default)]
     pub derived: bool,
+    /// Absolute amount as the vendor states it ("35 / 1,000", "12 used · Unlimited"), shown on hover
+    #[serde(default)]
+    pub amount: Option<String>,
+}
+
+/// One account's quotas, for providers that aggregate several (9Router's Quota Tracker)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct QuotaGroup {
+    /// Provider id as the aggregator names it (antigravity, claude, codex…), for the glyph
+    pub provider: String,
+    pub title: String,
+    /// Account label (name, else email)
+    pub account: String,
+    #[serde(default)]
+    pub plan: Option<String>,
+    /// Why the rows are missing or old (re-authorise, not supported…)
+    #[serde(default)]
+    pub message: Option<String>,
+    pub rows: Vec<LimitWindow>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -70,6 +89,9 @@ pub struct UsageSnapshot {
     pub note: String,
     #[serde(default)]
     pub backoff_until: u64,
+    /// Per-account breakdown; when present the card shows it instead of `windows`
+    #[serde(default)]
+    pub groups: Vec<QuotaGroup>,
 }
 
 fn store_path() -> std::path::PathBuf {

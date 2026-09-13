@@ -548,6 +548,7 @@ fn read_once(rt: &mut Runtime, prev: &UsageSnapshot) -> UsageSnapshot {
         resets_at: None,
         count: Some(n as i64),
         derived: true,
+        ..Default::default()
     }];
     snap.note = match tier {
         Some(t) => format!("{t} · Google publishes no quota for this account"),
