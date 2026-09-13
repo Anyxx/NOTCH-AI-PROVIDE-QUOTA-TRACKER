@@ -108,36 +108,23 @@
     background:radial-gradient(circle at 100% 100%, transparent calc(var(--fillet) - 1.5px), var(--stroke) calc(var(--fillet) - 0.5px), var(--ink) calc(var(--fillet) + 0.5px));
   }
 
-  /* ---------- Dragging: the notch travels as a drop of ink ----------
-     The edge-welded pill (fillets and all) looked like a cut-out sticker once pulled off its edge, so
-     while dragged everything else is hidden and a round drop takes its place: it stretches along the
-     direction of travel, its outline ripples through a turbulence displacement that grows with speed,
-     and on release it flattens against the edge it lands on before the handle takes over. The filter
-     only runs while dragging — nothing references it otherwise. */
+  /* ---------- Dragging: an AssistiveTouch button ----------
+     The edge-welded pill (fillets and all) read as a cut-out sticker once pulled off its edge, so while
+     dragged everything else is hidden and a plain rounded button takes its place — the iOS
+     AssistiveTouch look: dark rounded square, concentric white circles. It follows the cursor, slides
+     back to the nearest edge on release, and the handle fades in where it lands. No deformation. */
   #blob{
-    position:absolute;left:50%;top:50%;width:56px;height:56px;margin:-28px 0 0 -28px;border-radius:50%;
-    background:radial-gradient(circle at 34% 30%, #3b3b42 0%, #121214 46%, #000 74%);
-    box-shadow:0 0 0 1px var(--stroke), 0 10px 24px rgba(0,0,0,.45);
-    opacity:0;pointer-events:none;transform:scale(.3);
-    transition:opacity .16s linear, transform .4s var(--spring);
+    position:absolute;left:50%;top:50%;width:54px;height:54px;margin:-27px 0 0 -27px;border-radius:16px;
+    background:rgba(28,28,30,.86);
+    box-shadow:0 0 0 1px rgba(255,255,255,.08), 0 6px 18px rgba(0,0,0,.35);
+    opacity:0;pointer-events:none;transform:scale(.7);
+    transition:opacity .18s var(--ease), transform .3s var(--spring);
   }
-  #blob .rim{position:absolute;inset:4px;border-radius:50%;border:2px solid var(--tint,#00FF88);opacity:.85}
-  #blob .shine{position:absolute;left:15px;top:11px;width:15px;height:8px;border-radius:50%;background:rgba(255,255,255,.2);filter:blur(1px)}
-  #root[data-drag="1"] #blob{
-    opacity:1;filter:url(#liquid);
-    /* rotate · stretch · rotate back: a stretch along the direction of travel, whatever it is */
-    transform:rotate(var(--ang,0rad)) scale(calc(1 + var(--st,0)), calc(1 - var(--st,0) * .55)) rotate(calc(var(--ang,0rad) * -1));
-    transition:opacity .16s linear, transform .14s linear;
-  }
+  #blob::before,#blob::after{content:"";position:absolute;left:50%;top:50%;border-radius:50%;transform:translate(-50%,-50%)}
+  #blob::before{width:36px;height:36px;background:rgba(255,255,255,.2)}
+  #blob::after{width:22px;height:22px;background:rgba(255,255,255,.88)}
+  #root[data-drag="1"] #blob{opacity:1;transform:scale(1)}
   #root[data-drag="1"] #pill,#root[data-drag="1"] #handle,#root[data-drag="1"] #card{opacity:0!important;pointer-events:none!important;transition:opacity .08s linear}
-  /* Landing: the drop flattens against the edge it is gliding onto */
-  #root[data-drag="1"][data-land] #blob{transition:opacity .16s linear, transform .24s var(--ease)}
-  #root[data-drag="1"][data-land="right"]  #blob{transform-origin:100% 50%;transform:scale(.4,1.4)}
-  #root[data-drag="1"][data-land="left"]   #blob{transform-origin:0 50%;transform:scale(.4,1.4)}
-  #root[data-drag="1"][data-land="top"]    #blob{transform-origin:50% 0;transform:scale(1.4,.4)}
-  #root[data-drag="1"][data-land="bottom"] #blob{transform-origin:50% 100%;transform:scale(1.4,.4)}
-  #root[data-drag="1"][data-land="free"]   #blob{transform:scale(1.7,.28)}
-  #root[data-land=""] #blob{transform-origin:50% 50%}
 
   /* ---------- Cells ---------- */
   .cell{
@@ -178,10 +165,15 @@
     position:absolute;width:246px;max-width:calc(100% - 20px);--tail:50%;
     background:#0a0a0a;border-radius:16px;padding:16px;
     overflow-wrap:anywhere;min-width:0;
-    max-height:calc(100% - 16px);overflow:hidden; /* never taller than the window, however short it is */
+    /* never taller than the room it is given; what does not fit scrolls (the wheel reaches an
+       unfocused window on Windows 10+), so a long card never has to slide over the pill to fit */
+    max-height:calc(100% - 16px);overflow-x:hidden;overflow-y:auto;
+    scrollbar-width:thin;scrollbar-color:#333 transparent;
     opacity:0;pointer-events:none;transform:scale(.9);
     transition:opacity .16s linear,transform .34s var(--spring);
   }
+  #card::-webkit-scrollbar{width:6px}
+  #card::-webkit-scrollbar-thumb{background:#333;border-radius:3px}
   #card.show{opacity:1;pointer-events:auto;transform:none}
   #card::after{content:"";position:absolute;border:8px solid transparent}
   /* The tail points back at the pill, on whichever side the card had to open */
@@ -203,12 +195,7 @@
   .c-sessions{margin-top:12px;border-top:1px solid #1e1e1e;padding-top:8px}
   .s-row{display:flex;align-items:center;gap:6px;font-size:11px;color:#b0b0b3;padding:2px 0}
   .s-dot{width:6px;height:6px;border-radius:3px;flex:0 0 auto}
-  /* Quota Tracker layout (9Router, several Command Code accounts): a block per account, a compact row
-     per quota. Several accounts outgrow any window, so this card scrolls — the wheel reaches an
-     unfocused window on Windows 10+. */
-  #card.scroll{overflow-y:auto;scrollbar-width:thin;scrollbar-color:#333 transparent}
-  #card.scroll::-webkit-scrollbar{width:6px}
-  #card.scroll::-webkit-scrollbar-thumb{background:#333;border-radius:3px}
+  /* Quota Tracker layout (9Router, several Command Code accounts): a block per account, a compact row per quota */
   .q-group{margin-top:12px;padding-top:10px;border-top:1px solid #1c1c1c}
   .q-group:first-child{margin-top:8px;border-top:none;padding-top:0}
   .q-head{display:flex;align-items:center;gap:6px;min-width:0}
@@ -233,20 +220,11 @@
 </style>
 </head>
 <body>
-<svg width="0" height="0" style="position:absolute" aria-hidden="true">
-  <!-- The drop's ripple: animated fractal noise displacing its outline; the scale is raised with speed -->
-  <filter id="liquid" x="-40%" y="-40%" width="180%" height="180%">
-    <feTurbulence type="fractalNoise" baseFrequency="0.022" numOctaves="2" seed="7" result="noise">
-      <animate attributeName="baseFrequency" dur="1.4s" values="0.018;0.034;0.018" repeatCount="indefinite"/>
-    </feTurbulence>
-    <feDisplacementMap id="liquidDisp" in="SourceGraphic" in2="noise" scale="7" xChannelSelector="R" yChannelSelector="G"/>
-  </filter>
-</svg>
 <div id="root" data-edge="right" data-mode="dock" data-state="idle">
   <div id="card"></div>
   <div id="handle"></div><!-- the resting state: a slim capsule at the edge, like the iOS home indicator -->
   <div id="pill"></div><!-- one .cell per provider (column on a side edge, row as an island) -->
-  <div id="blob"><div class="rim"></div><div class="shine"></div></div><!-- what is carried while dragging -->
+  <div id="blob"></div><!-- what is carried while dragging: an AssistiveTouch-style button -->
   <div id="notice"></div>
 </div>
 <script>
@@ -270,7 +248,6 @@ let activity=[]; // working state of the non-Claude providers: {provider,state:'
 
 const root=document.getElementById('root'), card=document.getElementById('card');
 const pill=document.getElementById('pill'), handle=document.getElementById('handle');
-const blob=document.getElementById('blob'), liquidDisp=document.getElementById('liquidDisp');
 
 /* ---------- Open / closed ----------
    The window itself resizes with the state (Rust side): an always-on-top window eats clicks over its
@@ -353,7 +330,6 @@ function svgArc(r,frac,color,width,extra=''){
 
 /* The handle carries the one number that matters while closed: it takes the colour of the most
    constrained provider, so a glance at the edge still says "you are fine" or "you are nearly out". */
-let worstTone=null;
 function tintHandle(){
   let worst=null;
   for(const p of providers()){
@@ -361,8 +337,7 @@ function tintHandle(){
     if(h&&h.count==null&&(worst==null||h.used>worst)) worst=h.used;
   }
   const anyWorking=providers().some(p=>workState(p.id)==='running');
-  worstTone = worst==null ? null : tone(worst);
-  handle.style.background = worstTone || 'rgba(230,230,235,.34)';
+  handle.style.background = worst==null ? 'rgba(230,230,235,.34)' : tone(worst);
   handle.style.opacity = state==='open' ? '' : (anyWorking?'.95':'.62');
 }
 
@@ -454,7 +429,6 @@ function renderCard(){
   const p=providers().find(x=>x.id===hoverId)||providers()[0];
   const snap=p.snap;
   const grouped=!!(snap.groups&&snap.groups.length);
-  c.classList.toggle('scroll', grouped);
   const headIcon=glyphHtml(p,true);
   let html=`<div class="c-head">${headIcon}<span class="c-title">${p.name} Usage</span></div>`;
   if(staleOf(snap)&&snap.fetched_at) html+=`<div class="c-sub">Updated ${ago(snap.fetched_at)}</div>`;
@@ -509,22 +483,29 @@ function renderCard(){
   placeCard();
 }
 /* The card opens on the free side of the pill and its tail points back at the hovered cell:
-   beside it on a side edge, under/over it in island form. */
+   beside it on a side edge, under/over it in island form. In island form it is given exactly the
+   room on its own side of the island and scrolls within it: clamping a tall card back into the
+   window used to slide it up over the island and hide its own top rows behind it. */
 function placeCard(){
   const cell=pill.querySelector(`.cell[data-p="${hoverId}"]`)||pill;
   const cr=cell.getBoundingClientRect(), pr=pill.getBoundingClientRect();
-  const W=innerWidth, H=innerHeight, cw=card.offsetWidth||246, ch=card.offsetHeight||0;
+  const W=innerWidth, H=innerHeight, cw=card.offsetWidth||246;
   card.classList.remove('tail-r','tail-l','tail-t','tail-b');
-  if(isIsland()||cfg.edge==='top'||cfg.edge==='bottom'){
-    const below = cfg.edge!=='bottom';
+  if(isIsland()){
+    // Free mode always hangs the island from the top of its window, whatever edge it last docked to
+    const below = cfg.drag_enabled || cfg.edge!=='bottom';
+    const room = below ? H - Math.round(pr.bottom+10) - 8 : Math.round(pr.top-10) - 8;
+    card.style.maxHeight = Math.max(80,room)+'px';
+    const ch=card.offsetHeight; // measured after the cap, so an overlong card is already its capped size
     const cx=cr.left+cr.width/2;
     let left=Math.round(cx-cw/2); left=Math.max(8,Math.min(left,W-cw-8));
-    let top = below ? Math.round(pr.bottom+10) : Math.round(pr.top-ch-10);
-    top=Math.max(8,Math.min(top,H-ch-8));
-    card.style.left=left+'px'; card.style.top=top+'px';
+    const top = below ? Math.round(pr.bottom+10) : Math.round(pr.top-ch-10);
+    card.style.left=left+'px'; card.style.top=Math.max(8,top)+'px';
     card.classList.add(below?'tail-t':'tail-b');
     card.style.setProperty('--tail',Math.max(16,Math.min(cw-16,Math.round(cx-left)))+'px');
   }else{
+    card.style.maxHeight='';
+    const ch=card.offsetHeight||0;
     const onLeft = cfg.edge!=='left'; // docked right → card opens to the left, and vice versa
     const cy=cr.top+cr.height/2;
     let top=Math.round(cy-ch/2); top=Math.max(8,Math.min(top,H-ch-8));
@@ -629,11 +610,10 @@ listen('pointer_left',()=>{clearTimeout(hideTimer);hideCard();closeNotch();}).ca
 listen('usage',()=>{if(card.classList.contains('show'))armWatchdog();}).catch(()=>{});
 listen('state',()=>{if(card.classList.contains('show'))armWatchdog();}).catch(()=>{});
 
-/* ---------- Drag ----------
-   Press and move more than 4 px = drag. The notch is picked up as a drop: the card and pill go, the
-   window shrinks to the ball (Rust), and Rust follows the system cursor, streaming its velocity here
-   so the drop stretches along its path and ripples harder the faster it moves. On release it glides
-   to the nearest edge (or stays put in island mode), flattens against it, and the handle returns.
+/* ---------- Drag (AssistiveTouch) ----------
+   Press and move more than 4 px = drag. The card and pill go, the window shrinks around a small
+   button (Rust), and Rust keeps it under the system cursor. On release it slides to the nearest edge
+   (or stays put in island mode) and the handle fades in where it lands.
    A press without movement opens the notch (closed) or the provider's usage page (open). */
 function beginPress(e){ if(e.button!==0)return; press={x:e.clientX,y:e.clientY,id:cellAt(e.clientX,e.clientY)||hoverId}; }
 pill.addEventListener('mousedown',beginPress);
@@ -644,11 +624,8 @@ document.addEventListener('mousemove',e=>{
     dragging=true;
     clearTimeout(hideTimer); clearTimeout(dwellTimer); dwellTimer=null; clearTimeout(pendingShrink);
     hideCard();
-    // Straight to closed, without closeNotch's delayed shrink — Rust sizes the window for the ball
+    // Straight to closed, without closeNotch's delayed shrink — Rust sizes the window for the button
     state='idle'; root.dataset.state='idle';
-    blob.style.setProperty('--tint', worstTone||'#8a8a93');
-    blob.style.setProperty('--st','0');
-    root.dataset.land='';
     root.dataset.drag='1';
     invoke('drag_begin').catch(err=>{notice('drag_begin failed: '+err);dragging=false;root.dataset.drag='0';});
   }
@@ -661,25 +638,11 @@ document.addEventListener('mouseup',e=>{
   }
   press=null;
 });
-listen('drag_motion',e=>{
-  if(!dragging) return;
-  const {vx=0,vy=0}=e.payload||{};
-  const speed=Math.hypot(vx,vy);
-  blob.style.setProperty('--ang', Math.atan2(vy,vx).toFixed(3)+'rad');
-  blob.style.setProperty('--st', Math.min(speed/2600,.34).toFixed(3));
-  liquidDisp.setAttribute('scale', (7+Math.min(speed/160,14)).toFixed(1));
-}).catch(()=>{});
-listen('drag_land',e=>{
-  blob.style.setProperty('--st','0');
-  liquidDisp.setAttribute('scale','5');
-  root.dataset.land=(e.payload&&e.payload.edge)||'free';
-}).catch(()=>{});
 listen('drag_end',()=>{
   // Rust emits this just before it resizes the window back to the handle, so the resize that follows
-  // is measured against the handle's design width rather than the ball's
+  // is measured against the handle's design width rather than the button's
   dragging=false; press=null;
   root.dataset.drag='0';
-  root.dataset.land='';
 }).catch(()=>{});
 
 function notice(msg){

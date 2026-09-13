@@ -260,16 +260,16 @@ pub fn reset_bar(app: &AppHandle) {
     emit_config(app);
 }
 
-/// While dragged the notch travels as a ball (the page draws it) and the window shrinks to this
-/// square: room for the drop to stretch and ripple, and nothing else of the notch left to click on.
+/// While dragged the notch is a small AssistiveTouch-style button (the page draws it) and the window
+/// shrinks to this square around it: room for its shadow, and nothing else of the notch to click on.
 /// Mirrored in ui/notch.html (BALL).
 pub const BALL: f64 = 84.0;
 
-/// Drag, AssistiveTouch-style. The page calls this once a press on the handle or pill moves more
-/// than 4 px; from then on a Rust thread follows the system cursor (WebView mousemove is unreliable
-/// once the window itself starts moving). The ball stays centred on the cursor and its smoothed
-/// velocity is streamed to the page, which stretches the drop along it. On release it glides to the
-/// nearest edge (or stays where it was let go in island mode) and settles back into the handle.
+/// Drag, the iOS AssistiveTouch gesture. The page calls this once a press on the handle or pill moves
+/// more than 4 px; from then on a Rust thread follows the system cursor (WebView mousemove is
+/// unreliable once the window itself starts moving), keeping the button centred under it. On release
+/// the button slides to the nearest edge (or stays where it was let go in island mode) and the
+/// handle takes its place.
 static DRAGGING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[cfg(windows)]
@@ -285,7 +285,7 @@ fn left_button_down() -> bool {
 #[tauri::command]
 fn drag_begin(app: AppHandle) {
     use std::sync::atomic::Ordering;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
     if DRAGGING.swap(true, Ordering::SeqCst) {
         return;
     }
@@ -313,9 +313,6 @@ fn drag_begin(app: AppHandle) {
         let mut last = centred(cur.x, cur.y);
         let _ = w.set_position(tauri::PhysicalPosition::new(last.0, last.1));
 
-        let mut prev = (cur.x, cur.y, Instant::now());
-        let mut vel = (0.0f64, 0.0f64);
-        let mut last_emit = Instant::now();
         loop {
             if !left_button_down() {
                 break;
@@ -326,17 +323,6 @@ fn drag_begin(app: AppHandle) {
                     last = p;
                     let _ = w.set_position(tauri::PhysicalPosition::new(p.0, p.1));
                 }
-                let dt = prev.2.elapsed().as_secs_f64();
-                if dt > 0.0 {
-                    // Smoothed, so one jittery cursor sample does not jerk the drop around
-                    vel = (vel.0 * 0.7 + (c.x - prev.0) / dt * 0.3, vel.1 * 0.7 + (c.y - prev.1) / dt * 0.3);
-                    prev = (c.x, c.y, Instant::now());
-                }
-            }
-            // ~30 updates a second is enough for the page to ease between; logical px/s
-            if last_emit.elapsed() >= Duration::from_millis(33) {
-                let _ = app.emit("drag_motion", serde_json::json!({ "vx": vel.0 / ms, "vy": vel.1 / ms }));
-                last_emit = Instant::now();
             }
             std::thread::sleep(Duration::from_millis(8));
         }
@@ -352,8 +338,6 @@ fn drag_begin(app: AppHandle) {
                 config::save(&c);
             }
             applog(&format!("notch drag (island): centre=({},{})", centre.0, centre.1));
-            let _ = app.emit("drag_land", serde_json::json!({ "edge": "free" }));
-            std::thread::sleep(Duration::from_millis(200));
         } else {
             let (mx, my) = (mon.position().x, mon.position().y);
             let (mw, mh) = (mon.size().width as i32, mon.size().height as i32);
@@ -378,8 +362,8 @@ fn drag_begin(app: AppHandle) {
                 config::save(&c);
             }
             applog(&format!("notch drag: snapped to {edge} ratio={ratio:.3}"));
-            // Glide the drop to the spot the handle will occupy — flush against that edge — with an
-            // ease-out, while the page flattens it against the edge it is about to touch
+            // Slide the button to the spot the handle will occupy, flush against that edge, with an
+            // ease-out — the AssistiveTouch snap. No deformation: the handle simply takes its place.
             let along_y = (centre.1 - side / 2).clamp(my, my + (mh - side).max(0));
             let along_x = (centre.0 - side / 2).clamp(mx, mx + (mw - side).max(0));
             let target = match edge {
@@ -388,17 +372,15 @@ fn drag_begin(app: AppHandle) {
                 "bottom" => (along_x, my + mh - side),
                 _ => (mx + mw - side, along_y),
             };
-            let _ = app.emit("drag_land", serde_json::json!({ "edge": edge }));
-            const STEPS: i32 = 14;
+            const STEPS: i32 = 16;
             for i in 1..=STEPS {
                 let t = i as f64 / STEPS as f64;
                 let e = 1.0 - (1.0 - t).powi(3);
                 let x = last.0 as f64 + (target.0 - last.0) as f64 * e;
                 let y = last.1 as f64 + (target.1 - last.1) as f64 * e;
                 let _ = w.set_position(tauri::PhysicalPosition::new(x.round() as i32, y.round() as i32));
-                std::thread::sleep(Duration::from_millis(14));
+                std::thread::sleep(Duration::from_millis(12));
             }
-            std::thread::sleep(Duration::from_millis(110));
             emit_config(&app);
         }
         // drag_end before the resize, so the page has left ball mode when its design width is re-measured
