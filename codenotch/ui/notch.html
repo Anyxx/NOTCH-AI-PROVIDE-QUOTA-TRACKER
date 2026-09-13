@@ -130,17 +130,21 @@
      Closed, the handle can grow into a small black capsule, the way the Dynamic Island shows a timer
      or a call: what is working right now (peek 1), or a passing alert (peek 2, a little larger).
      Rust sizes the window to it (LIVE_W / TOAST_W); it springs out of the edge it is docked to. */
+  /* A fixed size anchored to its edge, never "fill the window": for a moment after closing the window
+     is still the open size, and an inset:4px capsule ballooned into a 300×500 black slab there. */
   #live{
-    position:absolute;inset:4px;border-radius:99px;background:var(--ink);border:1px solid var(--stroke);
-    display:flex;align-items:center;gap:9px;padding:0 14px 0 7px;cursor:pointer;overflow:hidden;
+    --lw:232px;--lh:36px;
+    position:absolute;width:var(--lw);height:var(--lh);border-radius:99px;background:var(--ink);border:1px solid var(--stroke);
+    display:flex;align-items:center;gap:9px;padding:0 14px 0 5px;cursor:pointer;overflow:hidden;
     opacity:0;pointer-events:none;transform:scale(.3);
     transition:opacity .18s var(--ease),transform .42s var(--spring);
   }
-  #root[data-edge="right"] #live{transform-origin:right center}
-  #root[data-edge="left"] #live{transform-origin:left center}
-  #root[data-edge="top"] #live{transform-origin:center top}
-  #root[data-edge="bottom"] #live{transform-origin:center bottom}
-  #root[data-mode="free"] #live{transform-origin:center}
+  #live[data-size="2"]{--lw:332px;--lh:56px}
+  #root[data-edge="right"] #live{right:4px;top:50%;margin-top:calc(var(--lh) / -2);transform-origin:right center}
+  #root[data-edge="left"] #live{left:4px;top:50%;margin-top:calc(var(--lh) / -2);transform-origin:left center}
+  #root[data-edge="top"] #live{top:4px;left:50%;margin-left:calc(var(--lw) / -2);transform-origin:center top}
+  #root[data-edge="bottom"] #live{bottom:4px;left:50%;margin-left:calc(var(--lw) / -2);transform-origin:center bottom}
+  #root[data-mode="free"] #live{left:50%;top:50%;right:auto;bottom:auto;margin:calc(var(--lh) / -2) 0 0 calc(var(--lw) / -2);transform-origin:center}
   #root[data-state="idle"][data-peek="1"] #live,#root[data-state="idle"][data-peek="2"] #live{opacity:1;pointer-events:auto;transform:none}
   #root[data-peek="1"] #handle,#root[data-peek="2"] #handle{opacity:0!important;pointer-events:none}
   #root[data-peek="2"] #live{padding-left:10px}
@@ -321,7 +325,11 @@ function closeNotch(){
   clearTimeout(pendingShrink);
   pendingShrink=setTimeout(()=>invoke('notch_expand',{on:false}).catch(()=>{}),CLOSE_MS);
   setTimeout(pumpToasts,CLOSE_MS+60); // alerts that came in while it was open
+  // No reopening from a cursor that simply stayed put while it closed: it has to move off first
+  // (or wait a moment). Second line of defence against any open/close loop the geometry misses.
+  needLeave=true; reopenAfter=Date.now()+CLOSE_MS+900;
 }
+let needLeave=false, reopenAfter=0;
 
 // "Is it working?" per provider: Claude from the four-state engine, the others from the activity probe. Returns running | attention | idle
 function workState(id){
@@ -461,6 +469,7 @@ function updatePeek(){
   clearTimeout(peekShrinkT);
   if(want){
     if(live.dataset.html!==html){ live.innerHTML=html; live.dataset.html=html; } // untouched otherwise, so the spinner keeps turning
+    live.dataset.size=String(want); // set only while showing, so a fading capsule keeps its size
     if(want!==peekWin){ peekWin=want; invoke('notch_peek',{kind:want}).catch(()=>{}); }
     root.dataset.peek=String(want);
   }else if(peekWin){
@@ -834,10 +843,30 @@ function pillHot(){
   if(root.dataset.mode==='dock'&&cfg.edge==='bottom') return {left:r.left,top:r.top,right:r.right,bottom:Math.max(r.bottom,innerHeight)};
   return r;
 }
+/* Where the closed notch was — the handle, or the Live Activity / compact pill — in the open window's
+   coordinates. It stays hot while open: the open pill can be narrower than the 240 px peek (two
+   cells as an island, a 70 px column on a side edge), and a cursor over the peek's far end would
+   open the notch, sit outside the pill, close it, find the peek under it again, and loop open/closed. */
+function closedFootprint(){
+  const isl=isIsland();
+  const [w,h] = peekWin===2 ? [TOAST_W,64] : peekWin===1 ? [LIVE_W,44] : (isl ? [132,18] : [18,132]);
+  const z=innerWidth/designWidth(); // design px → this page's client px (CSS zoom and the size setting)
+  const fw=w*z, fh=h*z, W=innerWidth, H=innerHeight;
+  if(root.dataset.mode==='free'){
+    const r=pill.getBoundingClientRect(), cx=(r.left+r.right)/2, cy=(r.top+r.bottom)/2;
+    return {left:cx-fw/2,right:cx+fw/2,top:cy-fh/2,bottom:cy+fh/2};
+  }
+  switch(cfg.edge){
+    case 'left':   return {left:0,right:fw,top:H/2-fh/2,bottom:H/2+fh/2};
+    case 'top':    return {left:W/2-fw/2,right:W/2+fw/2,top:0,bottom:fh};
+    case 'bottom': return {left:W/2-fw/2,right:W/2+fw/2,top:H-fh,bottom:H};
+    default:       return {left:W-fw,right:W,top:H/2-fh/2,bottom:H/2+fh/2};
+  }
+}
 function armWatchdog(){
   requestAnimationFrame(()=>{ // wait one frame so renderCard's new content is laid out before measuring
     if(!card.classList.contains('show'))return;
-    callq('set_expanded',{on:true,rects:[physRect(pillHot()),rectOf(card)]}).catch(()=>{});
+    callq('set_expanded',{on:true,rects:[physRect(pillHot()),rectOf(card),physRect(closedFootprint())]}).catch(()=>{});
   });
 }
 /* Design width for the current mode, mirroring the Rust constants (NOTCH_W / ISLAND_W / HANDLE_* / BALL).
@@ -886,6 +915,7 @@ function pointerInHot(x,y){
     : inRect(x,y,handle.getBoundingClientRect(),8);
   const p=pillHot();
   if(inRect(x,y,p,6))return true;
+  if(inRect(x,y,closedFootprint(),4))return true;
   if(!card.classList.contains('show'))return false;
   const c=card.getBoundingClientRect();
   if(inRect(x,y,c,4))return true;
@@ -899,6 +929,7 @@ document.addEventListener('mousemove',e=>{
   if(hot){
     clearTimeout(hideTimer);
     if(state!=='open'){
+      if(needLeave){ if(Date.now()<reopenAfter) return; needLeave=false; }
       // A short dwell before opening, so sweeping the cursor past the edge does not fling the panel open
       if(!dwellTimer) dwellTimer=setTimeout(()=>{dwellTimer=null;openNotch();},200);
       return;
@@ -909,6 +940,7 @@ document.addEventListener('mousemove',e=>{
   }
   else{
     clearTimeout(dwellTimer); dwellTimer=null;
+    needLeave=false;
     if(state==='open'){ if(hideLogged++<5) jslog(`mousemove left the hot area -> collapse at ${e.clientX},${e.clientY}`); scheduleHide(); }
   }
 });
