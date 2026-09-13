@@ -41,6 +41,10 @@ pub struct Config {
     /// Quota percentages that trigger an island alert when crossed; empty = alerts off (tray submenu)
     #[serde(default = "default_alert_levels")]
     pub alert_levels: Vec<u32>,
+    /// Closed and idle, show a two-sided island instead of the bare handle: the tightest quota on the
+    /// left, the next reset on the right (tray toggle)
+    #[serde(default)]
+    pub compact: bool,
 }
 
 fn default_true() -> bool {
@@ -85,6 +89,7 @@ impl Default for Config {
             scale: default_scale(),
             live_activity: true,
             alert_levels: default_alert_levels(),
+            compact: false,
         }
     }
 }

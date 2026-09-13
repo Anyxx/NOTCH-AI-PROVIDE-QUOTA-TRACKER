@@ -57,11 +57,14 @@ pub fn build_menu(app: &AppHandle, lang: &str) -> tauri::Result<Menu<Wry>> {
         .checked(crate::autostart::is_enabled())
         .build(app)?;
 
-    let (free_move, opacity, notch_scale, live, levels) = {
+    let (free_move, opacity, notch_scale, live, levels, compact) = {
         let st = app.state::<crate::AppState>();
         let c = st.cfg.lock().unwrap();
-        (c.drag_enabled, c.opacity, c.scale, c.live_activity, c.alert_levels.clone())
+        (c.drag_enabled, c.opacity, c.scale, c.live_activity, c.alert_levels.clone(), c.compact)
     };
+    let compact_item = CheckMenuItemBuilder::with_id("compact", tr(lang, "compact"))
+        .checked(compact)
+        .build(app)?;
     let free = CheckMenuItemBuilder::with_id("free-move", tr(lang, "free_move"))
         .checked(free_move)
         .build(app)?;
@@ -111,6 +114,7 @@ pub fn build_menu(app: &AppHandle, lang: &str) -> tauri::Result<Menu<Wry>> {
         .item(&reset)
         .item(&free)
         .item(&live_item)
+        .item(&compact_item)
         .item(&alerts_menu)
         .item(&opacity_menu)
         .item(&scale_menu)
@@ -184,6 +188,16 @@ fn handle(app: &AppHandle, id: &str) {
                 let st = app.state::<crate::AppState>();
                 let mut c = st.cfg.lock().unwrap();
                 c.live_activity = !c.live_activity;
+                crate::config::save(&c);
+            }
+            crate::emit_config(app);
+            refresh_menu(app);
+        }
+        "compact" => {
+            {
+                let st = app.state::<crate::AppState>();
+                let mut c = st.cfg.lock().unwrap();
+                c.compact = !c.compact;
                 crate::config::save(&c);
             }
             crate::emit_config(app);

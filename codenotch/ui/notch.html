@@ -242,6 +242,11 @@
   .q-bar{grid-column:1/-1;height:3px;border-radius:2px;background:#2d2d2d;overflow:hidden;margin-top:4px}
   .q-bar i{display:block;height:100%;border-radius:2px;transition:width .5s var(--ease)}
   .q-msg{font-size:11px;color:#c8a24a;margin-top:6px;line-height:1.4}
+  .q-tip{font-size:11px;line-height:1.4;color:#bfeed3;background:rgba(0,255,136,.07);border:1px solid rgba(0,255,136,.18);border-radius:8px;padding:6px 8px;margin:8px 0 2px}
+  /* History: the last 24 h of a quota as a faint line under its bar, and where the current pace ends up */
+  .spark{display:block;width:100%;height:24px;margin-top:5px}
+  .spark-l{display:flex;justify-content:space-between;font-size:9.5px;color:#55555c;margin-top:1px}
+  .w-fc{font-size:11px;margin-top:3px}
   #notice{
     position:absolute;left:8px;bottom:6px;right:80px;font-size:10px;color:#808080;
     background:rgba(0,0,0,.85);border-radius:8px;padding:4px 8px;display:none
@@ -451,7 +456,7 @@ function liveInfo(){
     +(metered?`<span class="lv-v" style="color:${tone(h.used)}">${Math.round(h.used*100)}%</span>`:'');
 }
 function updatePeek(){
-  const html = toastNow ? toastNow : liveInfo();
+  const html = toastNow ? toastNow : (liveInfo() || compactInfo());
   const want = toastNow ? 2 : (html ? 1 : 0);
   clearTimeout(peekShrinkT);
   if(want){
@@ -503,6 +508,7 @@ function checkEvents(){
 }
 let dsPrevPeak=null;
 setInterval(()=>{
+  updatePeek(); // countdowns in the Live Activity / compact island
   if(dsSnap.status==='absent') return;
   const {peak,next}=dsPricing();
   if(dsPrevPeak!==null && peak!==dsPrevPeak)
@@ -511,10 +517,96 @@ setInterval(()=>{
   if(card.classList.contains('show')&&hoverId==='deepseek') renderCard();
 },30000);
 
+/* Compact island: closed and idle, the Dynamic Island's two-sided look instead of the bare handle —
+   the tightest quota (its ring and share) on the left, the next reset on the right. */
+function compactInfo(){
+  if(!cfg.compact) return null;
+  const now=Date.now();
+  let worst=null, next=null;
+  for(const p of providers()){
+    if(p.snap.status==='needsAuth') continue;
+    const h=headlineOf(p.snap);
+    if(h&&h.count==null&&(!worst||h.used>worst.h.used)) worst={p,h};
+    for(const w of p.snap.windows)
+      if(w.count==null&&w.resets_at&&w.resets_at>now&&(!next||w.resets_at<next.w.resets_at)) next={p,w};
+  }
+  if(!worst) return null;
+  const C=2*Math.PI*12.5, u=Math.min(worst.h.used,1);
+  const ring=`<svg class="lv-ring" viewBox="0 0 28 28"><circle cx="14" cy="14" r="12.5" fill="none" stroke="${TRACK}" stroke-width="2.5"/>`
+    +`<circle cx="14" cy="14" r="12.5" fill="none" stroke="${tone(u)}" stroke-width="2.5" stroke-dasharray="${(C*u).toFixed(1)} ${C.toFixed(1)}" transform="rotate(-90 14 14)"/></svg>`;
+  return `<span class="lv-ic">${ring}${glyphHtml(worst.p,true)||esc(worst.p.glyph)}</span>`
+    +`<span class="lv-v" style="color:${tone(u)}">${Math.round(u*100)}%</span><span style="flex:1"></span>`
+    +(next?`<div class="lv-txt" style="flex:0 1 auto;text-align:right"><div class="lv-t">↻ ${esc(soonCopy(next.w.resets_at).replace(/^in /,''))}</div>`
+      +`<div class="lv-s">${esc(next.p.name+' · '+next.w.label)}</div></div>`:'');
+}
+
+/* ---------- History ----------
+   Every metered quota is sampled into localStorage (this page's own, private to the app): a point
+   when it moves, else one every 15 min, kept for 7 days. The card draws the last 24 h and projects
+   the current pace — measured only since the last reset — to say whether it lasts until the reset. */
+const HIST_KEY='cn-hist-v1', HIST_MS=7*864e5, HIST_STEP=15*6e4;
+let hist={};
+try{ hist=JSON.parse(localStorage.getItem(HIST_KEY)||'{}')||{}; }catch{ hist={}; }
+function recordHistory(){
+  const now=Date.now(); let dirty=false;
+  for(const p of providers()){
+    const s=p.snap; if(s.status!=='ok') continue;
+    const rows=[];
+    if(!(s.groups&&s.groups.length)) for(const w of s.windows) if(w.count==null) rows.push([w.id||w.label,w]);
+    for(const g of (s.groups||[])) for(const w of g.rows) rows.push([g.account+'/'+(w.id||w.label),w]);
+    for(const [k,w] of rows){
+      const key=p.id+':'+k, a=hist[key]||(hist[key]=[]), last=a[a.length-1], u=Math.round(w.used*1000)/1000;
+      if(last && now-last[0]<HIST_STEP && Math.abs(last[1]-u)<0.01) continue;
+      a.push([now,u]); dirty=true;
+      while(a.length&&now-a[0][0]>HIST_MS) a.shift();
+    }
+  }
+  if(dirty){ try{ localStorage.setItem(HIST_KEY,JSON.stringify(hist)); }catch{} }
+}
+// The points since the last reset: walking back, a drop of more than 15 points marks where it began
+function sinceReset(a){
+  let i=a.length-1;
+  while(i>0 && a[i-1][1]<=a[i][1]+0.15) i--;
+  return a.slice(i);
+}
+function forecast(key,w){
+  const now=Date.now();
+  const seg=sinceReset(hist[key]||[]).filter(p=>now-p[0]<6*36e5); // pace over the last 6 h at most
+  if(seg.length<3) return null;
+  const first=seg[0], last=seg[seg.length-1], dt=last[0]-first[0];
+  if(dt<30*6e4) return null;
+  const rate=(last[1]-first[1])/dt; // share per ms
+  if(rate<=1e-12) return {ok:true,text:'Barely moving lately — no risk of running out'};
+  const eta=now+(1-Math.min(w.used,1))/rate;
+  if(w.resets_at && eta>=w.resets_at) return {ok:true,text:'At this pace it lasts until the reset'};
+  return {ok:false,text:`At this pace it runs out ${whenCopy(eta)}`};
+}
+function spark(key){
+  const now=Date.now(), a=(hist[key]||[]).filter(p=>now-p[0]<864e5);
+  if(a.length<2) return '';
+  const W=214, H=24, t0=now-864e5;
+  const pts=a.map(([t,u])=>`${((t-t0)/864e5*W).toFixed(1)},${(H-1-Math.min(u,1)*(H-2)).toFixed(1)}`).join(' ');
+  return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><polyline points="${pts}" fill="none" stroke="#5d5d66" stroke-width="1.5" vector-effect="non-scaling-stroke"/></svg>`
+    +`<div class="spark-l"><span>24h ago</span><span>now</span></div>`;
+}
+const tipsSeen=new Set();
+function checkTips(){
+  for(const p of providers()){
+    if(!(p.snap.groups&&p.snap.groups.length)||p.snap.status!=='ok') continue;
+    for(const t of accountTips(p.snap.groups)){
+      if(tipsSeen.has(t.key)) continue;
+      tipsSeen.add(t.key);
+      if(alertsArmed) toast('↪',AMPLE,t.title,t.sub);
+    }
+  }
+}
+
 function renderRing(){
   const ps=providers();
   tintHandle();
   checkEvents();
+  checkTips();
+  recordHistory();
   updatePeek();
   if(state!=='open') return; // nothing of the pill is on screen while closed; skip the DOM work entirely
   // Rebuild the DOM only when the structure changes (never swap the element under the cursor)
@@ -577,8 +669,31 @@ function soonCopy(ms){
   const h=Math.floor(m/60);
   return h<24 ? `in ${h}h ${m%60}m` : `in ${Math.floor(h/24)}d ${h%24}h`;
 }
+/* Several accounts of the same provider (9Router, Command Code): when one is nearly out and another
+   still has plenty, say which one to switch to. The tightest row decides how much an account has left. */
+function accountTips(groups){
+  const by={};
+  for(const g of groups){
+    if(!g.rows.length) continue;
+    const left=Math.min(...g.rows.map(r=>1-r.used));
+    (by[g.provider||g.title]=by[g.provider||g.title]||[]).push({g,left});
+  }
+  const tips=[];
+  for(const list of Object.values(by)){
+    if(list.length<2) continue;
+    list.sort((a,b)=>a.left-b.left);
+    const lo=list[0], hi=list[list.length-1];
+    if(lo.left<0.2 && hi.left>=0.5) tips.push({
+      key:lo.g.title+'|'+lo.g.account+'|'+hi.g.account,
+      title:`${lo.g.title}: switch to ${hi.g.account}`,
+      sub:`${lo.g.account} has ${Math.round(lo.left*100)}% left · ${hi.g.account} has ${Math.round(hi.left*100)}%`,
+    });
+  }
+  return tips;
+}
 function renderGroups(groups){
   let h='<div class="q-groups">';
+  for(const t of accountTips(groups)) h+=`<div class="q-tip">↪ <b>${esc(t.title)}</b><br>${esc(t.sub)}</div>`;
   for(const g of groups){
     const gid=QUOTA_GLYPH[g.provider];
     const icon=gid?glyphHtml({id:gid,name:g.title,glyph:''},true):'';
@@ -626,10 +741,13 @@ function renderCard(){
           <div class="w-used">${w.count>0?`~${w.count} request${w.count===1?'':'s'} today`:'no requests today'}</div></div>`;
         continue;
       }
+      const hk=p.id+':'+(w.id||w.label), fc=forecast(hk,w);
       html+=`<div class="win">
         <div class="w-row"><span class="w-label">${esc(w.label)}</span><span class="w-reset">${resetCopy(w.resets_at)}</span></div>
         <div class="w-track"><div class="w-fill" style="width:${(Math.min(w.used,1)*100).toFixed(0)}%;background:${tone(w.used)}"></div></div>
         <div class="w-used">${w.derived?'~':''}${Math.round(w.used*100)}% Used</div>
+        ${spark(hk)}
+        ${fc?`<div class="w-fc" style="color:${fc.ok?'#808080':WATCH}">${esc(fc.text)}</div>`:''}
       </div>`;
     }
     if(snap.note) html+=`<div class="c-note">${esc(snap.note)}</div>`;

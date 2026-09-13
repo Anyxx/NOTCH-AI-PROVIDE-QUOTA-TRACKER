@@ -71,6 +71,7 @@ pub fn tr(lang: &str, key: &str) -> &'static str {
         (_, "api_keys") => "API keys…",
         (_, "live_activity") => "Live Activity (show what's working)",
         (_, "alerts") => "Quota alerts",
+        (_, "compact") => "Compact island (tightest quota + next reset)",
         (_, "alerts_off") => "Off",
         (_, "alerts_high") => "At 80% and 95%",
         (_, "alerts_all") => "At 50%, 80% and 95%",
