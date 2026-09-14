@@ -492,19 +492,66 @@ fn noactivate(app: &AppHandle) {
 #[cfg(not(windows))]
 fn noactivate(_app: &AppHandle) {}
 
-/// Is a full-screen app (game, video, F11 browser) or presentation in front? Windows' own answer —
-/// the same signal it uses to hold back notifications — rather than guessing from window rectangles.
+/// Is a full-screen app (game, video, F11 browser) or presentation in front of the notch's monitor?
+/// Returns what it found, for the log. Windows' own QUNS_BUSY was used alone at first and proved far
+/// too broad: it also fires for a maximized window when the taskbar auto-hides, for invisible
+/// full-screen helper windows (wallpaper engines, overlays) and for full screen on another monitor —
+/// the notch vanished with no game in sight. Now only Direct3D exclusive full screen and
+/// presentation mode are taken from Windows; anything else must be the foreground window itself
+/// covering the whole primary monitor without being merely maximized.
 #[cfg(windows)]
-fn fullscreen_busy() -> bool {
-    use windows::Win32::UI::Shell::{
-        SHQueryUserNotificationState, QUNS_BUSY, QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN,
+fn fullscreen_busy() -> Option<String> {
+    use windows::Win32::Foundation::{POINT, RECT};
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MonitorFromPoint, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTOPRIMARY,
     };
-    matches!(unsafe { SHQueryUserNotificationState() },
-        Ok(s) if s == QUNS_BUSY || s == QUNS_RUNNING_D3D_FULL_SCREEN || s == QUNS_PRESENTATION_MODE)
+    use windows::Win32::UI::Shell::{SHQueryUserNotificationState, QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetClassNameW, GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindowVisible, IsZoomed,
+    };
+    unsafe {
+        match SHQueryUserNotificationState() {
+            Ok(s) if s == QUNS_RUNNING_D3D_FULL_SCREEN => return Some("Direct3D full screen".into()),
+            Ok(s) if s == QUNS_PRESENTATION_MODE => return Some("presentation mode".into()),
+            _ => {}
+        }
+        let fg = GetForegroundWindow();
+        if fg.0.is_null() || !IsWindowVisible(fg).as_bool() || IsIconic(fg).as_bool() || IsZoomed(fg).as_bool() {
+            return None;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(fg, Some(&mut pid));
+        if pid == std::process::id() {
+            return None;
+        }
+        let mut buf = [0u16; 128];
+        let n = GetClassNameW(fg, &mut buf) as usize;
+        let class = String::from_utf16_lossy(&buf[..n.min(buf.len())]);
+        // The desktop and the taskbar cover the screen too, and are never "an app in full screen"
+        if ["Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd"].contains(&class.as_str()) {
+            return None;
+        }
+        // Only the monitor the notch lives on (it is placed on the primary one)
+        let mon = MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST);
+        if mon != MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) {
+            return None;
+        }
+        let mut mi = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+        let mut r = RECT::default();
+        if !GetMonitorInfoW(mon, &mut mi).as_bool() || GetWindowRect(fg, &mut r).is_err() {
+            return None;
+        }
+        let m = mi.rcMonitor;
+        let covers = r.left <= m.left && r.top <= m.top && r.right >= m.right && r.bottom >= m.bottom;
+        covers.then(|| {
+            let exe = crate::focus::proc_maps().name.get(&pid).cloned().unwrap_or_default();
+            format!("{exe} ({class}) covers the screen")
+        })
+    }
 }
 #[cfg(not(windows))]
-fn fullscreen_busy() -> bool {
-    false
+fn fullscreen_busy() -> Option<String> {
+    None
 }
 
 /// Shows the notch without activating it: a plain show() may take focus from the app in front
@@ -527,10 +574,15 @@ fn set_shown(w: &tauri::WebviewWindow, on: bool) {
 fn start_fullscreen_watch(app: AppHandle) {
     std::thread::spawn(move || {
         let mut hidden = false;
+        let mut streak = 0u8;
         loop {
             std::thread::sleep(std::time::Duration::from_millis(1000));
             let enabled = app.state::<AppState>().cfg.lock().map(|c| c.hide_fullscreen).unwrap_or(false);
-            let hide = enabled && !DRAGGING.load(std::sync::atomic::Ordering::SeqCst) && fullscreen_busy();
+            let why = if enabled && !DRAGGING.load(std::sync::atomic::Ordering::SeqCst) { fullscreen_busy() } else { None };
+            // Two readings in a row before hiding, so a window that covers the screen for a moment
+            // (a splash screen, a transition) does not blink the notch away; shown again at once.
+            streak = if why.is_some() { streak.saturating_add(1) } else { 0 };
+            let hide = streak >= 2;
             if hide == hidden {
                 continue;
             }
@@ -538,7 +590,10 @@ fn start_fullscreen_watch(app: AppHandle) {
             if let Some(w) = app.get_webview_window("notch") {
                 set_shown(&w, !hide);
             }
-            applog(&format!("full-screen watch: notch {}", if hide { "hidden" } else { "shown" }));
+            match why {
+                Some(reason) if hide => applog(&format!("full-screen watch: notch hidden — {reason}")),
+                _ => applog("full-screen watch: notch shown"),
+            }
         }
     });
 }
