@@ -29,7 +29,7 @@ use tauri::{AppHandle, Emitter, Manager};
 /// Logical size of the notch window when open on a side edge: the 70 pt pill column plus room for the hover card.
 pub const NOTCH_W: f64 = 340.0;
 /// Hand-bumped build tag, written to run.log at startup so a log can always be matched to the exe that wrote it.
-pub const BUILD: &str = "r34";
+pub const BUILD: &str = "r35";
 pub const NOTCH_H: f64 = 460.0; // 300 clipped the card once it held three window blocks plus the session list
 /// Open size in island form (top/bottom edge, or free-floating): cells run in a row, card sits under them.
 /// Wide enough for six cells (6×56 + 5×18 + padding = 466) plus room for the card to sit under an end cell.
@@ -570,13 +570,54 @@ fn set_shown(w: &tauri::WebviewWindow, on: bool) {
     let _ = if on { w.show() } else { w.hide() };
 }
 
-/// Gets out of the way of full-screen apps (tray: Hide during full-screen apps), checked once a second
+/// Keeps the notch visible and on top of the always-on-top band. Design apps (Photoshop's floating
+/// panels, colour pickers, capture tools) put their own topmost windows up and the notch ended up
+/// underneath them: still there, just covered — "it disappears by itself". Returns what had to be
+/// repaired, for the log; the re-raise itself happens every time, since a window can be covered
+/// while still holding WS_EX_TOPMOST.
+#[cfg(windows)]
+fn keep_on_top(w: &tauri::WebviewWindow) -> Option<&'static str> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, IsWindowVisible, SetWindowPos, ShowWindow, GWL_EXSTYLE, HWND_TOPMOST, SWP_NOACTIVATE,
+        SWP_NOMOVE, SWP_NOSIZE, SW_SHOWNOACTIVATE, WS_EX_TOPMOST,
+    };
+    let h = w.hwnd().ok()?;
+    let hwnd = windows::Win32::Foundation::HWND(h.0 as isize as *mut core::ffi::c_void);
+    unsafe {
+        let repaired = if !IsWindowVisible(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+            Some("was hidden")
+        } else if GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST.0 as isize == 0 {
+            Some("had lost always-on-top")
+        } else {
+            None
+        };
+        let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        repaired
+    }
+}
+#[cfg(not(windows))]
+fn keep_on_top(_w: &tauri::WebviewWindow) -> Option<&'static str> {
+    None
+}
+
+/// Gets out of the way of full-screen apps (tray: Hide during full-screen apps), checked once a second;
+/// the rest of the time it keeps the notch on top (see keep_on_top)
 fn start_fullscreen_watch(app: AppHandle) {
     std::thread::spawn(move || {
         let mut hidden = false;
         let mut streak = 0u8;
+        let mut tick = 0u32;
         loop {
             std::thread::sleep(std::time::Duration::from_millis(1000));
+            tick = tick.wrapping_add(1);
+            if !hidden && tick % 2 == 0 && !DRAGGING.load(std::sync::atomic::Ordering::SeqCst) {
+                if let Some(w) = app.get_webview_window("notch") {
+                    if let Some(what) = keep_on_top(&w) {
+                        applog(&format!("keep-on-top: notch {what} — restored"));
+                    }
+                }
+            }
             let enabled = app.state::<AppState>().cfg.lock().map(|c| c.hide_fullscreen).unwrap_or(false);
             let why = if enabled && !DRAGGING.load(std::sync::atomic::Ordering::SeqCst) { fullscreen_busy() } else { None };
             // Two readings in a row before hiding, so a window that covers the screen for a moment
