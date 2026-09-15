@@ -775,6 +775,9 @@ function renderCard(){
     html+=`<div class="c-sub">Quota left per account</div>`;
     html+=renderGroups(snap.groups);
     if(snap.note) html+=`<div class="c-note">${esc(snap.note)}</div>`;
+    // Switching connections on/off needs typing-free clicks in a focusable window: the settings one
+    if(p.id==='router9')
+      html+=`<button onclick="invoke('open_settings',{section:'r9conn'})" style="margin-top:10px;font:600 11.5px 'Segoe UI',system-ui,sans-serif;background:#1d1d22;color:#ececf0;border:1px solid #2e2e34;border-radius:8px;padding:6px 10px;cursor:pointer">⏻ Manage connections…</button>`;
   }else if(!snap.windows.length){
     html+=`<div class="c-note">${esc(snap.note||'Waiting for first reading…')}</div>`;
   }else{

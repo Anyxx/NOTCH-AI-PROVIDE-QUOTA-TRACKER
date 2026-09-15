@@ -248,17 +248,34 @@ fn get_json(path: &str, token: &str) -> Result<Value, FetchErr> {
 }
 
 fn get_json_at(base: &str, path: &str, token: &str, cf: Option<(String, String)>) -> Result<Value, FetchErr> {
+    send_json_at(base, "GET", path, token, cf, None)
+}
+
+/// One request to 9Router's API — GET for readings, PUT to switch a connection — with the same
+/// CLI-token and Cloudflare Access headers and the same reading of whatever answered
+fn send_json_at(
+    base: &str,
+    method: &str,
+    path: &str,
+    token: &str,
+    cf: Option<(String, String)>,
+    body: Option<&Value>,
+) -> Result<Value, FetchErr> {
     let url = format!("{base}{path}");
     // Redirects are not followed. 9Router's API never redirects, so a 3xx means something in front
     // of it answered — and following it lands on a sign-in page that then fails as "bad JSON", which
     // is exactly the unhelpful error this used to show for a 9Router behind Cloudflare Access.
     let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(30)).build();
     let with_token = cf.is_some();
-    let mut req = agent.get(&url).set("x-9r-cli-token", token).set("Accept", "application/json");
+    let mut req = agent.request(method, &url).set("x-9r-cli-token", token).set("Accept", "application/json");
     if let Some((id, secret)) = &cf {
         req = req.set("CF-Access-Client-Id", id).set("CF-Access-Client-Secret", secret);
     }
-    match req.call() {
+    let sent = match body {
+        Some(b) => req.send_json(b.clone()),
+        None => req.call(),
+    };
+    match sent {
         Ok(r) => {
             if (300..400).contains(&r.status()) {
                 let loc = r.header("location").unwrap_or("").to_string();
@@ -304,6 +321,72 @@ fn get_json_at(base: &str, path: &str, token: &str, cf: Option<(String, String)>
 
 fn fetch_stats(token: &str) -> Result<Value, FetchErr> {
     get_json("/api/usage/stats?period=today", token)
+}
+
+// ---------------- Connections: switching 9Router's providers on and off ----------------
+// GET /api/providers lists every connection (keys and tokens already dropped by 9Router);
+// PUT /api/providers/<id> {isActive} is the dashboard's own on/off switch. Both accept the CLI token
+// (src/dashboardGuard.js: every non-public /api/* path lets a valid x-9r-cli-token through).
+
+/// One connection as the settings window shows it. An allowlist like the account list: whatever
+/// else 9Router sends along (provider-specific settings) never leaves this module.
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+pub struct Connection {
+    pub id: String,
+    pub provider: String,
+    pub name: String,
+    pub auth_type: String,
+    pub active: bool,
+}
+
+fn connection_from(c: &Value) -> Option<Connection> {
+    let s = |k: &str| c.get(k).and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
+    let id = s("id");
+    if id.is_empty() {
+        return None;
+    }
+    let name = [s("name"), s("displayName"), s("email")].into_iter().find(|v| !v.is_empty()).unwrap_or_default();
+    Some(Connection {
+        id,
+        provider: s("provider"),
+        name,
+        auth_type: s("authType"),
+        // 9Router's own default: a connection without the flag counts as on
+        active: c.get("isActive").and_then(|x| x.as_bool()).unwrap_or(true),
+    })
+}
+
+fn connection_error(e: &FetchErr) -> String {
+    match e {
+        FetchErr::AccessBlocked { with_token } => access_message(*with_token),
+        FetchErr::NeedsAuth(_) => rejected_message(),
+        FetchErr::NotFound => "9Router doesn't know that connection any more — reload the list".into(),
+        other => format!("9Router: {}", err_text(other)),
+    }
+}
+
+pub fn list_connections() -> Result<Vec<Connection>, String> {
+    let token = cli_token().ok_or_else(|| "No CLI token — connect 9Router above first".to_string())?;
+    let v = get_json("/api/providers", &token).map_err(|e| connection_error(&e))?;
+    Ok(v.get("connections")
+        .and_then(|x| x.as_array())
+        .map(|a| a.iter().filter_map(connection_from).collect())
+        .unwrap_or_default())
+}
+
+pub fn set_connection_active(id: &str, active: bool) -> Result<(), String> {
+    // The id goes into the URL path: only the characters 9Router's ids are made of
+    if id.is_empty() || id.len() > 100 || !id.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) {
+        return Err("That isn't a 9Router connection id".into());
+    }
+    let token = cli_token().ok_or_else(|| "No CLI token — connect 9Router above first".to_string())?;
+    let body = serde_json::json!({ "isActive": active });
+    send_json_at(&base_url(), "PUT", &format!("/api/providers/{id}"), &token, cf_access(), Some(&body))
+        .map_err(|e| connection_error(&e))?;
+    crate::applog(&format!("router9: connection {id} switched {}", if active { "on" } else { "off" }));
+    // The Quota Tracker lists active accounts only: re-read so the card follows the switch
+    request_refresh();
+    Ok(())
 }
 
 // ---------------- Quota Tracker: a port of the dashboard's parseQuotaData ----------------
@@ -847,6 +930,22 @@ mod tests {
         let url = std::env::var("CODENOTCH_TEST_R9_URL").expect("set CODENOTCH_TEST_R9_URL");
         let r = super::get_json_at(&super::normalize_base(&url), "/api/usage/stats?period=today", "0000000000000000", None);
         assert!(matches!(r, Err(super::FetchErr::AccessBlocked { with_token: false })));
+    }
+
+    #[test]
+    fn connections_keep_only_the_allowlist() {
+        let v = serde_json::json!({"connections": [
+            {"id":"a1","provider":"antigravity","authType":"oauth","email":"me@x.com","isActive":false,
+             "providerSpecificData":{"cookie":"secret"}},
+            {"id":"b2","provider":"openrouter","authType":"apikey","name":"Work"},
+            {"provider":"no-id"}
+        ]});
+        let list: Vec<_> = v["connections"].as_array().unwrap().iter().filter_map(super::connection_from).collect();
+        assert_eq!(list.len(), 2, "a connection without an id cannot be switched, so it is left out");
+        assert_eq!((list[0].name.as_str(), list[0].active), ("me@x.com", false));
+        assert_eq!((list[1].name.as_str(), list[1].active), ("Work", true), "no flag means on, as in 9Router");
+        assert!(!format!("{:?}", list).contains("secret"));
+        assert!(super::set_connection_active("../settings", false).is_err());
     }
 
     #[test]

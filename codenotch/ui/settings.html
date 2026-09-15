@@ -84,6 +84,17 @@
   .prov .pname{flex:1;font-size:12.5px;font-weight:600}
   .prov.off .pname{color:var(--mute);font-weight:400;text-decoration:line-through}
   .prov button{padding:3px 9px;font-size:12px}
+  /* 9Router connections: an iOS-style switch per connection */
+  .conn-group{font-size:11px;color:var(--mute);text-transform:uppercase;letter-spacing:.4px;margin:8px 2px 0}
+  .conn-group:first-child{margin-top:0}
+  .sw{position:relative;display:inline-block;width:36px;height:21px;flex:0 0 auto}
+  .sw input{position:absolute;opacity:0;width:0;height:0}
+  .sw span{position:absolute;inset:0;background:#2a2a30;border-radius:99px;cursor:pointer;transition:background .2s}
+  .sw span::before{content:"";position:absolute;left:3px;top:3px;width:15px;height:15px;border-radius:50%;background:#ececf0;transition:transform .3s var(--spring)}
+  .sw input:checked + span{background:var(--ok)}
+  .sw input:checked + span::before{transform:translateX(15px)}
+  .sw input:disabled + span{opacity:.5;cursor:default}
+  .acct.off .acct-name{color:var(--mute)}
 </style>
 </head>
 <body>
@@ -159,6 +170,14 @@
       <button class="primary" id="r9Save">Save &amp; test</button>
     </div>
     <div class="result" id="r9Result"></div>
+
+    <details id="r9Conn">
+      <summary>Provider connections <span class="saved-hint" id="r9ConnHint" hidden></span></summary>
+      <p>Switch a connection off and 9Router stops sending requests to it — the same switch as on its Providers page, without opening the dashboard.</p>
+      <div class="acct-list" id="r9ConnList"><div class="acct-empty">Loading…</div></div>
+      <div class="row"><span class="spacer"></span><button class="ghost" id="r9ConnReload">Reload</button></div>
+      <div class="result" id="r9ConnResult"></div>
+    </details>
   </section>
 
   <section class="card">
@@ -402,6 +421,68 @@ for(const pre of document.querySelectorAll('pre[data-copy]')){
   };
   pre.appendChild(b);
 }
+
+// ---- 9Router connections: switched on/off straight through its API ----
+const R9_NAMES = {antigravity:'Antigravity', claude:'Claude', codex:'Codex', cursor:'Cursor', kiro:'Kiro',
+  gemini:'Gemini', 'gemini-cli':'Gemini CLI', github:'GitHub Copilot', qwen:'Qwen', iflow:'iFlow',
+  openrouter:'OpenRouter', deepseek:'DeepSeek', glm:'GLM', kimi:'Kimi', minimax:'MiniMax'};
+const r9Name = p => R9_NAMES[p] || (p ? p.charAt(0).toUpperCase() + p.slice(1) : 'Provider');
+let connsLoaded = false;
+async function loadConns(){
+  const box = $('r9ConnList');
+  box.innerHTML = '<div class="acct-empty">Loading…</div>';
+  let list;
+  try { list = await invoke('router9_connections'); }
+  catch(e){ box.innerHTML = ''; say($('r9ConnResult'), 'bad', String(e)); return; }
+  connsLoaded = true;
+  box.innerHTML = '';
+  $('r9ConnHint').hidden = false;
+  $('r9ConnHint').textContent = `● ${list.filter(c => c.active).length} of ${list.length} on`;
+  if(!list.length){ box.innerHTML = '<div class="acct-empty">No connections in 9Router yet.</div>'; return; }
+  let group = null;
+  for(const c of [...list].sort((a, b) => a.provider.localeCompare(b.provider))){
+    if(c.provider !== group){
+      group = c.provider;
+      const g = document.createElement('div'); g.className = 'conn-group'; g.textContent = r9Name(group);
+      box.appendChild(g);
+    }
+    // textContent throughout: names come from 9Router
+    const row = document.createElement('div'); row.className = 'acct' + (c.active ? '' : ' off');
+    row.innerHTML = '<div class="acct-main"><div class="acct-name"></div><div class="acct-sub"></div></div>'
+      + '<label class="sw" title="On = 9Router may use this connection"><input type="checkbox"><span></span></label>';
+    row.querySelector('.acct-name').textContent = c.name || r9Name(c.provider);
+    row.querySelector('.acct-sub').textContent = [c.auth_type, c.active ? 'on' : 'off'].filter(Boolean).join(' · ');
+    const input = row.querySelector('input');
+    input.checked = c.active;
+    input.onchange = async () => {
+      const want = input.checked;
+      input.disabled = true;
+      try {
+        await invoke('router9_set_active', {id: c.id, active: want});
+        c.active = want;
+        row.classList.toggle('off', !want);
+        row.querySelector('.acct-sub').textContent = [c.auth_type, want ? 'on' : 'off'].filter(Boolean).join(' · ');
+        $('r9ConnHint').textContent = `● ${list.filter(x => x.active).length} of ${list.length} on`;
+        say($('r9ConnResult'), want ? 'ok' : 'warn', `${want ? 'Turned on' : 'Turned off'}: ${c.name || r9Name(c.provider)}`);
+      } catch(e){
+        input.checked = !want; // 9Router did not take it: show the switch as it really is
+        say($('r9ConnResult'), 'bad', String(e));
+      }
+      input.disabled = false;
+    };
+    box.appendChild(row);
+  }
+}
+$('r9Conn').addEventListener('toggle', () => { if($('r9Conn').open && !connsLoaded) loadConns(); });
+$('r9ConnReload').onclick = loadConns;
+// Opened from the notch's "Manage connections…": land on that section — set before load for a new
+// window (window.__openSection), called directly when the window was already open
+function openSection(s){
+  if(s !== 'r9conn') return;
+  $('r9Conn').open = true; // the toggle event loads the list
+  setTimeout(() => $('r9Conn').scrollIntoView({block:'start', behavior:'smooth'}), 60);
+}
+if(window.__openSection) openSection(window.__openSection);
 
 // ---- Providers & layout: order, visibility, theme — saved on every change ----
 const PROVIDERS = [['claude','Claude'],['codex','Codex'],['cursor','Cursor'],['gemini','Antigravity'],

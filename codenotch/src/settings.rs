@@ -6,26 +6,38 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
 pub fn open(app: &AppHandle) {
+    open_section(app, None);
+}
+
+/// Opens the settings window, scrolled to one section when asked (the notch's "Manage connections…")
+pub fn open_section(app: &AppHandle, section: Option<&str>) {
+    // Goes into a line of script below: letters and digits only
+    let section = section.filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric()));
     if let Some(w) = app.get_webview_window("settings") {
         let _ = w.unminimize();
         let _ = w.show();
         let _ = w.set_focus();
+        if let Some(s) = section {
+            let _ = w.eval(&format!("window.openSection && openSection('{s}')"));
+        }
         return;
     }
-    let built = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
+    let mut builder = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
         .title("Codenotch — Settings")
         .inner_size(500.0, 760.0)
         .resizable(false)
-        .center()
-        .build();
-    if let Err(e) = built {
+        .center();
+    if let Some(s) = section {
+        builder = builder.initialization_script(&format!("window.__openSection = '{s}';"));
+    }
+    if let Err(e) = builder.build() {
         crate::applog(&format!("settings window: {e}"));
     }
 }
 
 #[tauri::command]
-pub fn open_settings(app: AppHandle) {
-    open(&app);
+pub fn open_settings(app: AppHandle, section: Option<String>) {
+    open_section(&app, section.as_deref());
 }
 
 #[derive(Serialize)]
@@ -203,6 +215,23 @@ pub fn clear_router9() {
         secrets::delete(t);
     }
     crate::router9::request_refresh();
+}
+
+/// 9Router's provider connections, to switch them on and off from here instead of its dashboard.
+/// Network calls run off the main thread so the window never freezes while 9Router answers.
+#[tauri::command]
+pub async fn router9_connections() -> Result<Vec<crate::router9::Connection>, String> {
+    tauri::async_runtime::spawn_blocking(crate::router9::list_connections)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// The same switch as the dashboard's: 9Router stops (or resumes) routing requests to that connection
+#[tauri::command]
+pub async fn router9_set_active(id: String, active: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || crate::router9::set_connection_active(&id, active))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// This PC's own token, for pasting into Codenotch on another computer that should read this 9Router
