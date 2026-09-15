@@ -35,8 +35,12 @@ pub fn open_section(app: &AppHandle, section: Option<&str>) {
     }
 }
 
+/// Async on purpose: a synchronous command runs on the main thread, and building a WebView window
+/// from there deadlocks on Windows — the settings window came up blank white and the whole app
+/// froze until it was ended in Task Manager. (The tray path is a menu event, not a command, and
+/// never hit this.)
 #[tauri::command]
-pub fn open_settings(app: AppHandle, section: Option<String>) {
+pub async fn open_settings(app: AppHandle, section: Option<String>) {
     open_section(&app, section.as_deref());
 }
 
