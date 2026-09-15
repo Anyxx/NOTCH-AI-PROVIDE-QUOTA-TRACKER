@@ -1,4 +1,4 @@
-﻿#![cfg_attr(all(not(debug_assertions), windows), windows_subsystem = "windows")]
+#![cfg_attr(all(not(debug_assertions), windows), windows_subsystem = "windows")]
 
 mod autostart;
 mod config;
@@ -32,7 +32,7 @@ pub const NOTCH_W: f64 = 340.0;
 pub const BUILD: &str = "r36";
 pub const NOTCH_H: f64 = 460.0; // 300 clipped the card once it held three window blocks plus the session list
 /// Open size in island form (top/bottom edge, or free-floating): cells run in a row, card sits under them.
-/// Wide enough for six cells (6Ã—56 + 5Ã—18 + padding = 466) plus room for the card to sit under an end cell.
+/// Wide enough for six cells (6×56 + 5×18 + padding = 466) plus room for the card to sit under an end cell.
 pub const ISLAND_W: f64 = 560.0;
 pub const ISLAND_H: f64 = 440.0;
 /// The island hangs from the top of its own window (16 px inset + ~52 px half-height), so this is
@@ -40,16 +40,16 @@ pub const ISLAND_H: f64 = 440.0;
 /// the island would jump upwards the moment the window grew around the handle.
 const ISLAND_ANCHOR_Y: f64 = 68.0;
 /// Cell metrics, mirroring ui/notch.html: ring 56 + 6 gap + 18 label, stacked with a 14 gap inside 18 padding.
-/// Only the *height* of the open window follows the provider count â€” the width stays fixed so the page's
+/// Only the *height* of the open window follows the provider count — the width stays fixed so the page's
 /// design-width zoom correction (fitZoom) keeps a single number to compare against.
 const CELL_H: f64 = 80.0;
 const COL_GAP: f64 = 14.0;
 const CARD_H: f64 = 280.0;
-/// Closed size. The window shrinks to roughly the handle itself so the rest of the screen stays clickable â€”
+/// Closed size. The window shrinks to roughly the handle itself so the rest of the screen stays clickable —
 /// an always-on-top window swallows clicks over its transparent area, so "hidden" has to mean "small", not "invisible".
 pub const HANDLE_LONG: f64 = 132.0;
 pub const HANDLE_SHORT: f64 = 18.0;
-/// Closed but "peeking": the handle grown into a small pill, Dynamic Island style â€” a Live Activity
+/// Closed but "peeking": the handle grown into a small pill, Dynamic Island style — a Live Activity
 /// (what is working right now) or, larger, a passing alert. Mirrored in ui/notch.html (PEEK_W).
 const LIVE_W: f64 = 240.0;
 const LIVE_H: f64 = 44.0;
@@ -151,7 +151,7 @@ fn save_layout(app: AppHandle, order: Vec<String>, hidden: Vec<String>, theme: S
 
 /// Logical window size for the current mode: open or collapsed to the handle, docked on a side edge
 /// (tall) or lying along a top/bottom edge or floating free (wide island). A tall column has to fit
-/// every cell â€” six providers need ~586 px, well past the 460 the notch used when there were four.
+/// every cell — six providers need ~586 px, well past the 460 the notch used when there were four.
 fn notch_size(edge: &str, free_move: bool, expanded: bool, peek: u8, notch_scale: f64, cells: usize) -> (f64, f64) {
     let horizontal = free_move || edge_is_horizontal(edge);
     if !expanded && peek > 0 {
@@ -202,7 +202,7 @@ pub fn place_notch(app: &AppHandle) {
         let (nw, nh) = notch_size(&edge, free_move, expanded, peek, notch_scale, cells);
         let target = tauri::PhysicalSize::new((nw * ms).round() as u32, (nh * ms).round() as u32);
         let _ = w.set_size(target);
-        // Position from the window's measured physical size â€” deriving it from the scale factor
+        // Position from the window's measured physical size — deriving it from the scale factor
         // pushed the window past the right edge at 125 % / 150 % (the ring's right side was clipped).
         let (ww, wh) = w
             .outer_size()
@@ -245,7 +245,7 @@ pub fn place_notch(app: &AppHandle) {
             let _ = w.set_position(tauri::PhysicalPosition::new(x, y));
         }
         // Placement log line: the first thing to check when the notch is not visible.
-        // Appended, never rewritten â€” this used to truncate run.log, and now that the notch is placed
+        // Appended, never rewritten — this used to truncate run.log, and now that the notch is placed
         // on every open and close it would wipe every other provider's diagnostics within seconds.
         applog(&format!(
             "notch placed build={BUILD}: edge={edge} free={free_move} open={expanded} pos=({x},{y}) size=({ww}x{wh}) inner={:?} win_scale={scale} mon_scale={ms} monitor=({mx},{my} {mw}x{mh})",
@@ -385,7 +385,7 @@ fn drag_begin(app: AppHandle) {
 
         let centre = (last.0 + side / 2, last.1 + side / 2);
         if free_move {
-            // Closed, the island's anchor is its window centre â€” exactly where the ball was let go
+            // Closed, the island's anchor is its window centre — exactly where the ball was let go
             {
                 let st = app.state::<AppState>();
                 let mut c = st.cfg.lock().unwrap();
@@ -419,7 +419,7 @@ fn drag_begin(app: AppHandle) {
             }
             applog(&format!("notch drag: snapped to {edge} ratio={ratio:.3}"));
             // Slide the button to the spot the handle will occupy, flush against that edge, with an
-            // ease-out â€” the AssistiveTouch snap. No deformation: the handle simply takes its place.
+            // ease-out — the AssistiveTouch snap. No deformation: the handle simply takes its place.
             let along_y = (centre.1 - side / 2).clamp(my, my + (mh - side).max(0));
             let along_x = (centre.0 - side / 2).clamp(mx, mx + (mw - side).max(0));
             let target = match edge {
@@ -495,7 +495,7 @@ fn noactivate(_app: &AppHandle) {}
 /// Is a full-screen app (game, video, F11 browser) or presentation in front of the notch's monitor?
 /// Returns what it found, for the log. Windows' own QUNS_BUSY was used alone at first and proved far
 /// too broad: it also fires for a maximized window when the taskbar auto-hides, for invisible
-/// full-screen helper windows (wallpaper engines, overlays) and for full screen on another monitor â€”
+/// full-screen helper windows (wallpaper engines, overlays) and for full screen on another monitor —
 /// the notch vanished with no game in sight. Now only Direct3D exclusive full screen and
 /// presentation mode are taken from Windows; anything else must be the foreground window itself
 /// covering the whole primary monitor without being merely maximized.
@@ -572,7 +572,7 @@ fn set_shown(w: &tauri::WebviewWindow, on: bool) {
 
 /// Keeps the notch visible and on top of the always-on-top band. Design apps (Photoshop's floating
 /// panels, colour pickers, capture tools) put their own topmost windows up and the notch ended up
-/// underneath them: still there, just covered â€” "it disappears by itself". Returns what had to be
+/// underneath them: still there, just covered — "it disappears by itself". Returns what had to be
 /// repaired, for the log; the re-raise itself happens every time, since a window can be covered
 /// while still holding WS_EX_TOPMOST.
 #[cfg(windows)]
@@ -614,7 +614,7 @@ fn start_fullscreen_watch(app: AppHandle) {
             if !hidden && tick % 2 == 0 && !DRAGGING.load(std::sync::atomic::Ordering::SeqCst) {
                 if let Some(w) = app.get_webview_window("notch") {
                     if let Some(what) = keep_on_top(&w) {
-                        applog(&format!("keep-on-top: notch {what} â€” restored"));
+                        applog(&format!("keep-on-top: notch {what} — restored"));
                     }
                 }
             }
@@ -632,7 +632,7 @@ fn start_fullscreen_watch(app: AppHandle) {
                 set_shown(&w, !hide);
             }
             match why {
-                Some(reason) if hide => applog(&format!("full-screen watch: notch hidden â€” {reason}")),
+                Some(reason) if hide => applog(&format!("full-screen watch: notch hidden — {reason}")),
                 _ => applog("full-screen watch: notch shown"),
             }
         }
@@ -770,7 +770,7 @@ fn open_provider_page(provider: String) {
 
 /// Card expansion state: Some(hot rectangles, in **physical pixels** relative to the window's
 /// top-left as x,y,w,h) = expanded; None = collapsed. The page converts the rectangles with its
-/// own devicePixelRatio before reporting them, so no scale conversion happens on this side â€”
+/// own devicePixelRatio before reporting them, so no scale conversion happens on this side —
 /// WebView2's DPR and the window's scale_factor can disagree (see report_dpr).
 static HOT: Mutex<Option<Vec<[f64; 4]>>> = Mutex::new(None);
 
@@ -828,11 +828,11 @@ fn report_dpr(app: AppHandle, dpr: f64, w: f64, h: f64) {
     }
 }
 
-/// WebView2's mouseleave is unreliable inside a NOACTIVATE transparent window â€” a cursor that
+/// WebView2's mouseleave is unreliable inside a NOACTIVATE transparent window — a cursor that
 /// leaves quickly often produces no WM_MOUSELEAVE, and the card stays up. Rather than trust DOM
 /// events, the Rust side watches the system cursor while the card is expanded and emits
 /// pointer_left once the cursor is outside; the page collapses after its 250 ms grace period.
-/// "Outside the window" is not the test, though: the window has a 340Ã—460 transparent area, so
+/// "Outside the window" is not the test, though: the window has a 340×460 transparent area, so
 /// the cursor is compared against the hot rectangles the page reports (pill, card, and the gap
 /// between them), and two consecutive misses (300 ms) count as leaving.
 fn start_pointer_watchdog(app: AppHandle) {
@@ -1032,8 +1032,8 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             // Launching a freshly built exe while the old one is still running lands here: the new
             // instance is turned away and what stays on screen is the old process. Say so loudly.
-            applog(&format!("single instance: another launch was refused; the running instance is build={BUILD} â€” quit it from the tray first if you just rebuilt"));
-            let _ = app.emit("notice", format!("Codenotch is already running ({BUILD}) â€” quit it from the tray before starting a new build"));
+            applog(&format!("single instance: another launch was refused; the running instance is build={BUILD} — quit it from the tray first if you just rebuilt"));
+            let _ = app.emit("notice", format!("Codenotch is already running ({BUILD}) — quit it from the tray before starting a new build"));
         }))
         .manage(AppState {
             store: Mutex::new(Default::default()),
