@@ -377,6 +377,9 @@ function closeAll(){
   clearTimeout(dwellT);
   if(state==='idle') return;
   hideCard(true);
+  // Closing with the cursor still on the island (the shape it shrinks into may be right under it):
+  // no reopening until the cursor has actually left
+  needLeave=hoverNow;
   state='idle'; applyShape();
   invoke('notch_expand',{on:false}).catch(()=>{});
   setTimeout(pumpToasts,500);
@@ -941,8 +944,17 @@ function renderAll(){
    The island as it is now and as it will be once the spring settles (so a growing island takes the
    cursor at once), plus the card when it shows. Physical px, relative to the window. */
 function physRect(r){const k=window.devicePixelRatio||1;return [r.left*k,r.top*k,(r.right-r.left)*k,(r.bottom-r.top)*k];}
-function targetRect(){
-  const [w,h]=geom(), W=innerWidth, H=innerHeight, a=parseFloat(root.style.getPropertyValue('--along'))||.5;
+function targetRect(){ const [w,h]=geom(); return rectFor(w,h); }
+/* The shape the island had while closed — the pill, or the wider Live Activity / alert. While open
+   this stays part of the hot area: the strip is narrower than a 300 px Live Activity, and a cursor
+   resting on the Activity's far end opened the strip, found itself outside it, closed it, found the
+   Activity under it again, and so on — the menu flickered in and out without a click. */
+function closedRect(){
+  const [w,h] = peek===2 ? (side()?[360,64]:[380,60]) : peek===1 ? (side()?[300,52]:[300,42]) : layerSize.closed();
+  return rectFor(w,h);
+}
+function rectFor(w,h){
+  const W=innerWidth, H=innerHeight, a=parseFloat(root.style.getPropertyValue('--along'))||.5;
   const z=zoomNow();
   const tw=w*z, th=h*z;
   switch(edge){
@@ -955,6 +967,7 @@ function targetRect(){
 function reportRects(){
   if(dragging) return;
   const rects=[physRect(island.getBoundingClientRect()), physRect(targetRect())];
+  if(state!=='idle') rects.push(physRect(closedRect()));
   if(cardEl.classList.contains('show')) rects.push(physRect(cardEl.getBoundingClientRect()));
   invoke('update_island_rect',{rects}).catch(()=>{});
 }
@@ -981,13 +994,16 @@ function reportDpr(){
 window.addEventListener('resize',()=>{clearTimeout(window._dprT);window._dprT=setTimeout(reportDpr,80);});
 
 /* ---------- Hover (from the Rust cursor poll) ---------- */
-let dwellT=null, closeT=null;
+let dwellT=null, closeT=null, needLeave=false, hoverNow=false;
 listen('island_hover',e=>{
+  hoverNow=!!e.payload;
   if(dragging) return;
   if(e.payload){
     clearTimeout(closeT);
+    if(needLeave) return; // closed under the cursor: wait for it to leave and come back
     if(state==='idle' && !dwellT) dwellT=setTimeout(()=>{ dwellT=null; openStrip(); },140);
   }else{
+    needLeave=false;
     clearTimeout(dwellT); dwellT=null;
     if(state!=='idle'){ clearTimeout(closeT); closeT=setTimeout(closeAll,300); }
   }
