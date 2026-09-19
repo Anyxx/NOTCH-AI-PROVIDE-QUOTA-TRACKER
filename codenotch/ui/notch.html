@@ -219,8 +219,8 @@
   .foot .by{margin-left:auto;font-size:10.5px;color:var(--mute)}
   .conn-g{font-size:10.5px;color:var(--mute);text-transform:uppercase;letter-spacing:.5px;margin:10px 2px 4px}
 
-  /* Dragging: the island travels as a plain pill, drawn where it was pressed — the window keeps its
-     size and moves with the cursor (resizing it mid-gesture flashed blank frames) */
+  /* Dragging: the island travels as a plain pill in the middle of the window, which keeps its size
+     and moves with the cursor centred on it (resizing it mid-gesture flashed blank frames) */
   #dragpill{position:absolute;left:50%;top:50%;width:150px;height:40px;margin:-20px 0 0 -75px;border-radius:20px;background:var(--ink);
     box-shadow:0 0 0 1px var(--line);display:flex;align-items:center;gap:7px;padding:0 12px 0 6px;
     opacity:0;transform:scale(.6);pointer-events:none;transition:opacity .15s,transform .5s var(--ew)}
@@ -866,10 +866,10 @@ function r9Html(){
   return h+`<div class="foot" style="margin-top:8px"><button class="btn" data-act="conns-reload">Reload</button></div></div>`;
 }
 function settingsHtml(){
-  const pos=cfg.drag_enabled?'free':(['top','bottom','left','right'].includes(cfg.edge)?cfg.edge:'right');
+  const pos=cfg.drag_enabled?'free':(['top','left','right'].includes(cfg.edge)?cfg.edge:'top');
   const seg=(key,opts,cur)=>`<div class="seg">${opts.map(([v,l])=>`<button class="${String(v)===String(cur)?'on':''}" data-set="${key}" data-val='${JSON.stringify(v)}'>${l}</button>`).join('')}</div>`;
   const theme=(!cfg.theme||cfg.theme==='dark')?'midnight':cfg.theme;
-  let h=`<div class="sec"><h4>Position</h4>${seg('pos',[['top','Top'],['bottom','Bottom'],['left','Left'],['right','Right'],['free','Float']],pos)}</div>`;
+  let h=`<div class="sec"><h4>Position</h4>${seg('pos',[['top','Top'],['left','Left'],['right','Right'],['free','Float']],pos)}</div>`;
   h+=`<div class="sec"><h4>Theme</h4><div class="swatches">${THEMES.map(([id,name,ink,acc])=>`<div class="swatch ${theme===id?'on':''}" data-theme-pick="${id}" title="${name}" style="background:${ink}"><i style="background:${acc}"></i></div>`).join('')}</div></div>`;
   h+=`<div class="sec"><h4>Behaviour</h4>`
     +`<div class="row"><div class="rl">Live Activity<div class="rs">Show what is working while closed</div></div><button class="sw ${cfg.live_activity!==false?'on':''}" data-toggle="live_activity"></button></div>`
@@ -1011,10 +1011,8 @@ document.addEventListener('mousemove',e=>{
     dragging=true; moved=true;
     clearTimeout(closeT); clearTimeout(dwellT); dwellT=null;
     hideCard(true);
-    const pill=$('dragpill');
-    pill.innerHTML=closedHtml(false);
-    // right under the cursor: the window moves with it, so this is where the pill stays
-    pill.style.left=(press.x/zoomVal)+'px'; pill.style.top=(press.y/zoomVal)+'px';
+    // Rust centres the window on the cursor, so the pill sits in the middle of it — never cut off at an edge
+    $('dragpill').innerHTML=closedHtml(false);
     state='idle'; applyShape();
     root.dataset.drag='1';
     invoke('drag_begin').catch(err=>{notice('drag_begin failed: '+err);dragging=false;root.dataset.drag='0';});

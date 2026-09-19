@@ -27,7 +27,7 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
 
 /// Hand-bumped build tag, written to run.log at startup so a log can always be matched to the exe that wrote it.
-pub const BUILD: &str = "r41";
+pub const BUILD: &str = "r42";
 /// The notch window, logical px (mirrored in ui/notch.html, WIN). The approach Bloom uses
 /// (github.com/sehajveersingh2005/bloom): the window keeps one size per edge and never resizes while
 /// the island animates. The island is an element inside it that springs between shapes, and the
@@ -155,7 +155,7 @@ fn set_pref(app: AppHandle, key: String, value: serde_json::Value) -> Result<(),
             }
             "edge" => {
                 let e = value.as_str().ok_or_else(bad)?;
-                if !["top", "bottom", "left", "right"].contains(&e) {
+                if !["top", "left", "right"].contains(&e) {
                     return Err(bad());
                 }
                 c.edge = e.to_string();
@@ -182,11 +182,12 @@ fn set_pref(app: AppHandle, key: String, value: serde_json::Value) -> Result<(),
     Ok(())
 }
 
+/// Docked edges: top, left or right. The bottom is the taskbar's; a "bottom" saved by an earlier
+/// build is read as top.
 fn dock_edge(edge: &str) -> &'static str {
     match edge {
         "left" => "left",
         "right" => "right",
-        "bottom" => "bottom",
         _ => "top",
     }
 }
@@ -478,11 +479,14 @@ fn drag_begin(app: AppHandle) {
             let _ = app.emit("drag_end", false);
         };
         let Some(w) = app.get_webview_window("notch") else { return bail(&app) };
-        let (Ok(cur), Ok(wpos)) = (app.cursor_position(), w.outer_position()) else { return bail(&app) };
-        // The window keeps its size and simply travels with the cursor. Shrinking a transparent
-        // WebView window to a pill at the start of a drag (and growing it back at the end) flashed
-        // blank frames; the page now draws the pill right where it was pressed instead.
-        let off = (cur.x - wpos.x as f64, cur.y - wpos.y as f64);
+        let (Ok(cur), Ok(size)) = (app.cursor_position(), w.outer_size()) else { return bail(&app) };
+        // The window keeps its size and simply travels with the cursor (shrinking a transparent
+        // WebView window to a pill and growing it back flashed blank frames). It is first centred on
+        // the cursor and the page draws the pill in its middle: drawn where it was pressed — at the
+        // screen edge, where a docked island sits — half the pill fell outside the window, cut off.
+        let off = (size.width as f64 / 2.0, size.height as f64 / 2.0);
+        let wpos = tauri::PhysicalPosition::new((cur.x - off.0).round() as i32, (cur.y - off.1).round() as i32);
+        let _ = w.set_position(wpos);
         EXPANDED.store(false, Ordering::Relaxed);
         *HOT.lock().unwrap() = None;
         set_click_through(&w, false);
@@ -521,13 +525,9 @@ fn drag_begin(app: AppHandle) {
         } else {
             let (mx, my) = (mon.position().x, mon.position().y);
             let (mw, mh) = (mon.size().width as i32, mon.size().height as i32);
-            // Snap to the nearest edge, right where it was let go along that edge
-            let gaps = [
-                ("left", centre.0 - mx),
-                ("right", mx + mw - centre.0),
-                ("top", centre.1 - my),
-                ("bottom", my + mh - centre.1),
-            ];
+            // Snap to the nearest edge, right where it was let go along that edge. Never the bottom:
+            // that is where the taskbar lives
+            let gaps = [("left", centre.0 - mx), ("right", mx + mw - centre.0), ("top", centre.1 - my)];
             let (edge, _) = gaps.iter().min_by_key(|(_, g)| *g).copied().unwrap_or(("right", 0));
             let horizontal = edge == "top" || edge == "bottom";
             // The closed island's centre on that edge, level with where it was let go
