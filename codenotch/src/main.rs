@@ -27,17 +27,20 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
 
 /// Hand-bumped build tag, written to run.log at startup so a log can always be matched to the exe that wrote it.
-pub const BUILD: &str = "r40";
+pub const BUILD: &str = "r41";
 /// The notch window, logical px (mirrored in ui/notch.html, WIN). The approach Bloom uses
 /// (github.com/sehajveersingh2005/bloom): the window keeps one size per edge and never resizes while
 /// the island animates. The island is an element inside it that springs between shapes, and the
-/// transparent rest of the window lets clicks through (set_ignore_cursor_events, driven by
+/// transparent rest of the window lets clicks through (set_click_through, driven by
 /// start_hit_test). Resizing the window mid-animation made the shape jump and wander.
 const WIN_WIDE: (f64, f64) = (620.0, 520.0); // top / bottom edge, or floating
 const WIN_TALL: (f64, f64) = (480.0, 640.0); // left / right edge
 /// Floating, the closed pill hangs at the top of its window; this is the pill's centre, which is
 /// where the saved free position points
 const FREE_ANCHOR_Y: f64 = 19.0;
+/// The closed island (mirrored in ui/notch.html, geom): lying along a top/bottom edge, standing on a side
+const PILL_WIDE: (f64, f64) = (200.0, 32.0);
+const PILL_TALL: (f64, f64) = (32.0, 140.0);
 
 /// Open (true) or collapsed to the handle (false). The page drives this through `notch_expand`.
 static EXPANDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -323,7 +326,7 @@ fn start_hit_test(app: AppHandle) {
             let Some(w) = app.get_webview_window("notch") else { continue };
             if DRAGGING.load(Ordering::SeqCst) {
                 if ignoring != Some(false) {
-                    let _ = w.set_ignore_cursor_events(false);
+                    set_click_through(&w, false);
                     ignoring = Some(false);
                 }
                 continue;
@@ -351,7 +354,7 @@ fn start_hit_test(app: AppHandle) {
             }
             let ignore = !inside;
             if ignoring != Some(ignore) {
-                let _ = w.set_ignore_cursor_events(ignore);
+                set_click_through(&w, ignore);
                 ignoring = Some(ignore);
             }
             if inside != hovered {
@@ -413,10 +416,32 @@ pub fn reset_bar(app: &AppHandle) {
     emit_config(app);
 }
 
-/// While dragged the island travels as a plain pill (the page draws it) in a window of this size:
-/// room for the pill and its shadow, nothing else to click on. Mirrored in ui/notch.html (GEO.drag).
-pub const DRAG_W: f64 = 170.0;
-pub const DRAG_H: f64 = 60.0;
+/// Click-through on or off. Only WS_EX_TRANSPARENT is toggled; WS_EX_LAYERED is set once and kept.
+/// Tauri's set_ignore_cursor_events adds and removes both, and every time WS_EX_LAYERED is dropped
+/// Windows re-composites the window — the island blinked whenever the cursor crossed its edge.
+#[cfg(windows)]
+fn set_click_through(w: &tauri::WebviewWindow, on: bool) {
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_LAYERED, WS_EX_TRANSPARENT};
+    if let Ok(h) = w.hwnd() {
+        let hwnd = windows::Win32::Foundation::HWND(h.0 as isize as *mut core::ffi::c_void);
+        unsafe {
+            let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+            let mut next = ex | WS_EX_LAYERED.0 as isize;
+            if on {
+                next |= WS_EX_TRANSPARENT.0 as isize;
+            } else {
+                next &= !(WS_EX_TRANSPARENT.0 as isize);
+            }
+            if next != ex {
+                SetWindowLongPtrW(hwnd, GWL_EXSTYLE, next);
+            }
+        }
+    }
+}
+#[cfg(not(windows))]
+fn set_click_through(w: &tauri::WebviewWindow, on: bool) {
+    let _ = w.set_ignore_cursor_events(on);
+}
 
 /// Drag, the iOS AssistiveTouch gesture. The page calls this once a press on the handle or pill moves
 /// more than 4 px; from then on a Rust thread follows the system cursor (WebView mousemove is
@@ -453,27 +478,21 @@ fn drag_begin(app: AppHandle) {
             let _ = app.emit("drag_end", false);
         };
         let Some(w) = app.get_webview_window("notch") else { return bail(&app) };
-        let Ok(cur) = app.cursor_position() else { return bail(&app) };
-        // Sized for the screen it is picked up on; where it lands decides the monitor it docks to
-        let Some(start_mon) = monitor_at(&app, cur.x.round() as i32, cur.y.round() as i32) else { return bail(&app) };
-        let ms = start_mon.scale_factor();
-        let (dw, dh) = ((DRAG_W * notch_scale * ms).round() as i32, (DRAG_H * notch_scale * ms).round() as i32);
-        // It lands closed, whatever it was when picked up
+        let (Ok(cur), Ok(wpos)) = (app.cursor_position(), w.outer_position()) else { return bail(&app) };
+        // The window keeps its size and simply travels with the cursor. Shrinking a transparent
+        // WebView window to a pill at the start of a drag (and growing it back at the end) flashed
+        // blank frames; the page now draws the pill right where it was pressed instead.
+        let off = (cur.x - wpos.x as f64, cur.y - wpos.y as f64);
         EXPANDED.store(false, Ordering::Relaxed);
         *HOT.lock().unwrap() = None;
-        let _ = w.set_size(tauri::PhysicalSize::new(dw as u32, dh as u32));
-        let centred = |x: f64, y: f64| {
-            clamp_to_virtual_screen((x - dw as f64 / 2.0).round() as i32, (y - dh as f64 / 2.0).round() as i32, dw, dh)
-        };
-        let mut last = centred(cur.x, cur.y);
-        let _ = w.set_position(tauri::PhysicalPosition::new(last.0, last.1));
-
+        set_click_through(&w, false);
+        let mut last = (wpos.x, wpos.y);
         loop {
             if !left_button_down() {
                 break;
             }
             if let Ok(c) = app.cursor_position() {
-                let p = centred(c.x, c.y);
+                let p = ((c.x - off.0).round() as i32, (c.y - off.1).round() as i32);
                 if p != last {
                     last = p;
                     let _ = w.set_position(tauri::PhysicalPosition::new(p.0, p.1));
@@ -482,12 +501,14 @@ fn drag_begin(app: AppHandle) {
             std::thread::sleep(Duration::from_millis(8));
         }
 
-        let centre = (last.0 + dw / 2, last.1 + dh / 2);
+        // Where the pill is now: the press point, carried along with the window
+        let centre = (last.0 + off.0.round() as i32, last.1 + off.1.round() as i32);
         // The screen it was let go on — any monitor, not just the primary one
-        let mon = monitor_at(&app, centre.0, centre.1).unwrap_or_else(|| start_mon.clone());
+        let Some(mon) = monitor_at(&app, centre.0, centre.1) else { return bail(&app) };
         let mon_name = mon.name().cloned();
+        let ms = mon.scale_factor();
         if free_move {
-            // Closed, the island's anchor is its window centre — exactly where the ball was let go
+            // Floating, the saved position is the closed pill's centre — exactly where it was let go
             {
                 let st = app.state::<AppState>();
                 let mut c = st.cfg.lock().unwrap();
@@ -509,10 +530,21 @@ fn drag_begin(app: AppHandle) {
             ];
             let (edge, _) = gaps.iter().min_by_key(|(_, g)| *g).copied().unwrap_or(("right", 0));
             let horizontal = edge == "top" || edge == "bottom";
+            // The closed island's centre on that edge, level with where it was let go
+            let (pw, ph) = if horizontal { PILL_WIDE } else { PILL_TALL };
+            let (pw, ph) = ((pw * notch_scale * ms).round() as i32, (ph * notch_scale * ms).round() as i32);
+            let tx = centre.0.clamp(mx + pw / 2, (mx + mw - pw / 2).max(mx + pw / 2));
+            let ty = centre.1.clamp(my + ph / 2, (my + mh - ph / 2).max(my + ph / 2));
+            let dock = match edge {
+                "top" => (tx, my + ph / 2),
+                "bottom" => (tx, my + mh - ph / 2),
+                "left" => (mx + pw / 2, ty),
+                _ => (mx + mw - pw / 2, ty),
+            };
             let ratio = if horizontal {
-                (centre.0 - mx) as f64 / mw.max(1) as f64
+                (dock.0 - mx) as f64 / mw.max(1) as f64
             } else {
-                (centre.1 - my) as f64 / mh.max(1) as f64
+                (dock.1 - my) as f64 / mh.max(1) as f64
             };
             {
                 let st = app.state::<AppState>();
@@ -523,16 +555,9 @@ fn drag_begin(app: AppHandle) {
                 config::save(&c);
             }
             applog(&format!("notch drag: snapped to {edge} ratio={ratio:.3} monitor={mon_name:?}"));
-            // Glide the pill flush against that edge and let it settle with a small overshoot — a
-            // spring's last bounce — rather than stopping dead
-            let along_x = (centre.0 - dw / 2).clamp(mx, mx + (mw - dw).max(0));
-            let along_y = (centre.1 - dh / 2).clamp(my, my + (mh - dh).max(0));
-            let target = match edge {
-                "left" => (mx, along_y),
-                "right" => (mx + mw - dw, along_y),
-                "top" => (along_x, my),
-                _ => (along_x, my + mh - dh),
-            };
+            // Glide the pill onto that spot and let it settle with a small overshoot — a spring's
+            // last bounce — rather than stopping dead
+            let target = (dock.0 - off.0.round() as i32, dock.1 - off.1.round() as i32);
             const STEPS: i32 = 22;
             for i in 1..=STEPS {
                 let t = i as f64 / STEPS as f64;
@@ -544,12 +569,15 @@ fn drag_begin(app: AppHandle) {
                 let _ = w.set_position(tauri::PhysicalPosition::new(x.round() as i32, y.round() as i32));
                 std::thread::sleep(Duration::from_millis(12));
             }
-            emit_config(&app);
         }
-        // drag_end before the resize, so the page has left ball mode when its design width is re-measured
+        // Land: the page hides the pill at once, the window takes its docked place, and the island
+        // fades in there — no frame with the pill or the island in the wrong spot
+        let _ = app.emit("drag_land", true);
+        std::thread::sleep(Duration::from_millis(40));
+        place_notch(&app);
+        emit_config(&app);
         DRAGGING.store(false, Ordering::SeqCst);
         let _ = app.emit("drag_end", true);
-        place_notch(&app);
     });
 }
 pub fn place_bar(app: &AppHandle) {
@@ -695,8 +723,9 @@ fn set_shown(w: &tauri::WebviewWindow, on: bool) {
 #[cfg(windows)]
 fn keep_on_top(w: &tauri::WebviewWindow) -> Option<&'static str> {
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetWindowLongPtrW, IsWindowVisible, SetWindowPos, ShowWindow, GWL_EXSTYLE, HWND_TOPMOST, SWP_NOACTIVATE,
-        SWP_NOMOVE, SWP_NOSIZE, SW_SHOWNOACTIVATE, WS_EX_TOPMOST,
+        GetWindowLongPtrW, IsWindowVisible, SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_EXSTYLE, HWND_TOPMOST,
+        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSENDCHANGING, SWP_NOSIZE, SW_SHOWNOACTIVATE, WS_EX_NOACTIVATE,
+        WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
     };
     let h = w.hwnd().ok()?;
     let hwnd = windows::Win32::Foundation::HWND(h.0 as isize as *mut core::ffi::c_void);
@@ -709,7 +738,14 @@ fn keep_on_top(w: &tauri::WebviewWindow) -> Option<&'static str> {
         } else {
             None
         };
-        let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        // As Bloom does: raise without activating or notifying, then re-stamp NOACTIVATE +
+        // TOOLWINDOW, which some Windows builds strip when a window is made topmost again
+        let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOSENDCHANGING);
+        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        let want = ex | WS_EX_NOACTIVATE.0 as isize | WS_EX_TOOLWINDOW.0 as isize;
+        if want != ex {
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, want);
+        }
         repaired
     }
 }

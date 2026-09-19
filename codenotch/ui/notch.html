@@ -34,7 +34,7 @@
   #root[data-edge="bottom"] #island{bottom:0;left:calc(var(--along) * 100%);transform:translateX(-50%)}
   #root[data-edge="right"] #island{right:0;top:calc(var(--along) * 100%);transform:translateY(-50%)}
   #root[data-edge="left"] #island{left:0;top:calc(var(--along) * 100%);transform:translateY(-50%)}
-  #root[data-edge="free"] #island{top:0;left:calc(var(--along) * 100%);transform:translateX(-50%);box-shadow:0 8px 24px rgba(0,0,0,.35),0 0 0 1px var(--line)}
+  #root[data-edge="free"] #island{top:0;left:calc(var(--along) * 100%);transform:translateX(-50%)}
   .clip{position:absolute;inset:0;overflow:hidden;border-radius:inherit}
 
   /* Fillets: the concave curve between island and screen edge — a 12 px square of ink with a circle
@@ -219,12 +219,15 @@
   .foot .by{margin-left:auto;font-size:10.5px;color:var(--mute)}
   .conn-g{font-size:10.5px;color:var(--mute);text-transform:uppercase;letter-spacing:.5px;margin:10px 2px 4px}
 
-  /* dragging: the island travels as a plain pill */
+  /* Dragging: the island travels as a plain pill, drawn where it was pressed — the window keeps its
+     size and moves with the cursor (resizing it mid-gesture flashed blank frames) */
   #dragpill{position:absolute;left:50%;top:50%;width:150px;height:40px;margin:-20px 0 0 -75px;border-radius:20px;background:var(--ink);
-    box-shadow:0 0 0 1px var(--line),0 10px 26px rgba(0,0,0,.45);display:flex;align-items:center;gap:7px;padding:0 12px 0 6px;
+    box-shadow:0 0 0 1px var(--line);display:flex;align-items:center;gap:7px;padding:0 12px 0 6px;
     opacity:0;transform:scale(.6);pointer-events:none;transition:opacity .15s,transform .5s var(--ew)}
   #root[data-drag="1"] #dragpill{opacity:1;transform:scale(1.04)}
   #root[data-drag="1"] :is(#island,#card){opacity:0!important;pointer-events:none!important}
+  /* landing: everything hidden at once while the window takes its docked place, then the island fades in */
+  #root[data-drag="2"] :is(#island,#card,#dragpill){opacity:0!important;transition:none!important;pointer-events:none!important}
 
   #notice{position:absolute;left:12px;right:12px;bottom:8px;font-size:10.5px;color:var(--mute);background:var(--ink2);border-radius:8px;padding:5px 8px;display:none}
   #notice.show{display:block}
@@ -288,7 +291,7 @@ const L={closed:$('lClosed'), live:$('lLive'), strip:$('lStrip'), panel:$('lPane
 
 /* Window size per edge, mirrored from main.rs (WIN_WIDE / WIN_TALL), plus the drag pill (DRAG_*):
    the "design width" the size-setting zoom is measured against */
-const WIN={wide:[620,520],tall:[480,640],drag:[170,60]};
+const WIN={wide:[620,520],tall:[480,640]};
 const THEMES=[['midnight','Midnight','#000000','#0A84FF'],['graphite','Graphite','#1b1b1e','#c7c7d1'],['ocean','Ocean','#03131f','#22d3ee'],
   ['sunset','Sunset','#170a0b','#fb923c'],['forest','Forest','#06130c','#34d399'],['rose','Rose','#16080f','#f472b6'],['glass','Glass','#2a2a30','#ffffff']];
 
@@ -960,7 +963,7 @@ function burstRects(){ reportRects(); clearInterval(burstI); let n=0; burstI=set
 
 /* ---------- Diagnostics + zoom ---------- */
 function jslog(m){invoke('log_js',{msg:String(m)}).catch(()=>{});}
-function designWidth(){ return dragging ? WIN.drag[0] : (side()?WIN.tall[0]:WIN.wide[0]); }
+function designWidth(){ return side()?WIN.tall[0]:WIN.wide[0]; } // the window keeps this size even while dragged
 let zoomVal=1;
 function zoomNow(){ return zoomVal; }
 function fitZoom(){
@@ -1008,7 +1011,10 @@ document.addEventListener('mousemove',e=>{
     dragging=true; moved=true;
     clearTimeout(closeT); clearTimeout(dwellT); dwellT=null;
     hideCard(true);
-    $('dragpill').innerHTML=closedHtml(false);
+    const pill=$('dragpill');
+    pill.innerHTML=closedHtml(false);
+    // right under the cursor: the window moves with it, so this is where the pill stays
+    pill.style.left=(press.x/zoomVal)+'px'; pill.style.top=(press.y/zoomVal)+'px';
     state='idle'; applyShape();
     root.dataset.drag='1';
     invoke('drag_begin').catch(err=>{notice('drag_begin failed: '+err);dragging=false;root.dataset.drag='0';});
@@ -1017,7 +1023,8 @@ document.addEventListener('mousemove',e=>{
 document.addEventListener('mouseup',()=>{ press=null; setTimeout(()=>moved=false,0); });
 // The window moved under the cursor, so the page may never see that drag's mouseup: clear the
 // "just dragged" flag here too, or it would swallow the next click
-listen('drag_end',()=>{ dragging=false; press=null; setTimeout(()=>moved=false,60); root.dataset.drag='0'; setTimeout(pumpToasts,400); }).catch(()=>{});
+listen('drag_land',()=>{ root.dataset.drag='2'; }).catch(()=>{});
+listen('drag_end',()=>{ dragging=false; press=null; setTimeout(()=>moved=false,60); root.dataset.drag='0'; burstRects(); setTimeout(pumpToasts,400); }).catch(()=>{});
 
 function notice(msg){ const n=$('notice'); n.textContent=String(msg||''); n.classList.add('show'); clearTimeout(n._h); n._h=setTimeout(()=>n.classList.remove('show'),4000); }
 
