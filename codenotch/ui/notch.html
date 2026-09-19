@@ -3,117 +3,83 @@
 <head>
 <meta charset="UTF-8">
 <style>
-  /* The Dynamic Island. One surface (#shape) is reshaped by animating its clip-path with a spring:
-     closed it is a small pill welded to the middle of the top, left or right screen edge (concave
-     fillets where it meets the screen, like a MacBook notch); it springs into a Live Activity, an
-     alert, or the full panel with tabs. The window always matches the current shape (Rust sizes it),
-     and every inset below is relative (% of the window), so the shape morphs smoothly while the
-     window changes size underneath it. Only clip-path, transform and opacity animate: a transparent
-     always-on-top window repaints through the compositor, and animating layout there stutters. */
+  /* The Dynamic Island. Technique after Bloom (github.com/sehajveersingh2005/bloom): the window keeps
+     one size per edge and never resizes while the island animates. The island is a single element
+     anchored to its screen edge; its width, height and corner radii spring between shapes (closed
+     pill → Live Activity / alert → slim ring strip → panel), and the transparent rest of the window
+     lets clicks through (Rust polls the cursor against the rectangles this page reports). The concave
+     fillets where the island meets the screen are its children, so they ride along with it. */
   *{box-sizing:border-box}
   html,body{margin:0;padding:0;width:100%;height:100%;background:transparent;overflow:hidden;user-select:none}
   body{font-family:"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif}
 
-  /* colour is set here, not on body: the theme variables live on #root, and at body level
-     var(--text) is undefined — everything without its own colour came out black on black */
   #root{
-    position:relative;width:100%;height:100%;color:var(--text);
-    --fil:12px;--pw:220px;--ph:34px;--sw:34px;--sh:150px;--fh:40px;--r:28px;
+    position:relative;width:100%;height:100%;color:var(--text);--along:.5;
     --ink:#000;--ink2:#141417;--ink3:#1f1f24;--line:#2a2a30;--text:#f2f2f5;--mute:#8d8d96;--accent:#0A84FF;
-    --spring:cubic-bezier(.34,1.56,.64,1);--soft:cubic-bezier(.22,1,.36,1);--open-ms:620ms;--close-ms:380ms;
+    --ew:cubic-bezier(.34,1.4,.64,1);--eh:cubic-bezier(.34,1.4,.64,1);--er:cubic-bezier(.22,1,.36,1);
+    --dw:520ms;--dh:560ms;--dr:360ms;--soft:cubic-bezier(.22,1,.36,1);
   }
-  /* ---------- Themes: surfaces and the accent; quota colours stay semantic everywhere ---------- */
+  /* ---------- Themes: surfaces and the accent; quota colours stay semantic ---------- */
   #root[data-theme="graphite"]{--ink:#1b1b1e;--ink2:#26262a;--ink3:#303035;--line:#3a3a40;--accent:#c7c7d1}
   #root[data-theme="ocean"]{--ink:#03131f;--ink2:#0a2233;--ink3:#0f2e44;--line:#163c56;--mute:#86a3b5;--accent:#22d3ee}
   #root[data-theme="sunset"]{--ink:#170a0b;--ink2:#27130f;--ink3:#351b15;--line:#46261c;--mute:#b39488;--accent:#fb923c}
   #root[data-theme="forest"]{--ink:#06130c;--ink2:#0d2317;--ink3:#133120;--line:#1a3f2a;--mute:#8fae9c;--accent:#34d399}
   #root[data-theme="rose"]{--ink:#16080f;--ink2:#27111c;--ink3:#351726;--line:#461f33;--mute:#b391a4;--accent:#f472b6}
-  #root[data-theme="glass"]{--ink:rgba(16,16,20,.74);--ink2:rgba(255,255,255,.06);--ink3:rgba(255,255,255,.11);--line:rgba(255,255,255,.14);--accent:#ffffff}
+  #root[data-theme="glass"]{--ink:rgba(16,16,20,.78);--ink2:rgba(255,255,255,.06);--ink3:rgba(255,255,255,.11);--line:rgba(255,255,255,.14);--accent:#ffffff}
 
-  /* ---------- The surface ---------- */
-  #shape{position:absolute;inset:0;background:var(--ink);pointer-events:none;
-    transition:clip-path var(--close-ms) var(--soft)}
-  #root[data-state="open"] #shape, #root[data-peek="1"] #shape, #root[data-peek="2"] #shape{transition:clip-path var(--open-ms) var(--spring)}
-  /* top edge */
-  #root[data-edge="top"] #shape{clip-path:inset(0 calc(50% - var(--pw) / 2) calc(100% - var(--ph)) calc(50% - var(--pw) / 2) round 0 0 calc(var(--ph) / 2) calc(var(--ph) / 2))}
-  #root[data-edge="top"][data-peek="1"] #shape{clip-path:inset(0 var(--fil) 0 var(--fil) round 0 0 21px 21px)}
-  #root[data-edge="top"][data-peek="2"] #shape{clip-path:inset(0 var(--fil) 0 var(--fil) round 0 0 26px 26px)}
-  #root[data-edge="top"][data-state="open"] #shape{clip-path:inset(0 var(--fil) 0 var(--fil) round 0 0 var(--r) var(--r))}
-  /* right edge */
-  #root[data-edge="right"] #shape{clip-path:inset(calc(50% - var(--sh) / 2) 0 calc(50% - var(--sh) / 2) calc(100% - var(--sw)) round calc(var(--sw) / 2) 0 0 calc(var(--sw) / 2))}
-  #root[data-edge="right"][data-peek="1"] #shape{clip-path:inset(var(--fil) 0 var(--fil) 0 round 21px 0 0 21px)}
-  #root[data-edge="right"][data-peek="2"] #shape{clip-path:inset(var(--fil) 0 var(--fil) 0 round 26px 0 0 26px)}
-  #root[data-edge="right"][data-state="open"] #shape{clip-path:inset(var(--fil) 0 var(--fil) 0 round var(--r) 0 0 var(--r))}
-  /* left edge */
-  #root[data-edge="left"] #shape{clip-path:inset(calc(50% - var(--sh) / 2) calc(100% - var(--sw)) calc(50% - var(--sh) / 2) 0 round 0 calc(var(--sw) / 2) calc(var(--sw) / 2) 0)}
-  #root[data-edge="left"][data-peek="1"] #shape{clip-path:inset(var(--fil) 0 var(--fil) 0 round 0 21px 21px 0)}
-  #root[data-edge="left"][data-peek="2"] #shape{clip-path:inset(var(--fil) 0 var(--fil) 0 round 0 26px 26px 0)}
-  #root[data-edge="left"][data-state="open"] #shape{clip-path:inset(var(--fil) 0 var(--fil) 0 round 0 var(--r) var(--r) 0)}
-  /* floating freely: no edge, a fully rounded island */
-  #root[data-mode="free"] #shape{clip-path:inset(0 calc(50% - var(--pw) / 2) calc(100% - var(--fh)) calc(50% - var(--pw) / 2) round calc(var(--fh) / 2))}
-  #root[data-mode="free"][data-peek="1"] #shape{clip-path:inset(0 round 21px)}
-  #root[data-mode="free"][data-peek="2"] #shape{clip-path:inset(0 round 30px)}
-  #root[data-mode="free"][data-state="open"] #shape{clip-path:inset(0 round var(--r))}
+  /* ---------- The island ---------- */
+  #island{position:absolute;background:var(--ink);width:200px;height:32px;
+    transition:width var(--dw) var(--ew),height var(--dh) var(--eh),border-radius var(--dr) var(--er),opacity .2s}
+  #root[data-edge="top"] #island{top:0;left:calc(var(--along) * 100%);transform:translateX(-50%)}
+  #root[data-edge="bottom"] #island{bottom:0;left:calc(var(--along) * 100%);transform:translateX(-50%)}
+  #root[data-edge="right"] #island{right:0;top:calc(var(--along) * 100%);transform:translateY(-50%)}
+  #root[data-edge="left"] #island{left:0;top:calc(var(--along) * 100%);transform:translateY(-50%)}
+  #root[data-edge="free"] #island{top:0;left:calc(var(--along) * 100%);transform:translateX(-50%);box-shadow:0 8px 24px rgba(0,0,0,.35),0 0 0 1px var(--line)}
+  .clip{position:absolute;inset:0;overflow:hidden;border-radius:inherit}
 
-  /* Fillets: the concave curve where the island meets the screen edge. An FIL-sized square of ink
-     with a circle punched out of its outer corner, riding along the island's sides. */
-  .fil{position:absolute;width:var(--fil);height:var(--fil);pointer-events:none;display:none;
-    transition:left var(--close-ms) var(--soft),right var(--close-ms) var(--soft),top var(--close-ms) var(--soft),bottom var(--close-ms) var(--soft)}
-  #root[data-state="open"] .fil,#root[data-peek="1"] .fil,#root[data-peek="2"] .fil{
-    transition:left var(--open-ms) var(--spring),right var(--open-ms) var(--spring),top var(--open-ms) var(--spring),bottom var(--open-ms) var(--spring)}
-  #root[data-mode="dock"] .fil{display:block}
-  #root[data-edge="top"] .fil{top:0}
-  #root[data-edge="top"] .fil-a{left:calc(50% - var(--pw) / 2 - var(--fil));background:radial-gradient(circle at 0 100%,transparent calc(var(--fil) - .5px),var(--ink) calc(var(--fil) + .5px))}
-  #root[data-edge="top"] .fil-b{right:calc(50% - var(--pw) / 2 - var(--fil));background:radial-gradient(circle at 100% 100%,transparent calc(var(--fil) - .5px),var(--ink) calc(var(--fil) + .5px))}
-  #root[data-edge="top"]:is([data-state="open"],[data-peek="1"],[data-peek="2"]) .fil-a{left:0}
-  #root[data-edge="top"]:is([data-state="open"],[data-peek="1"],[data-peek="2"]) .fil-b{right:0}
-  #root[data-edge="right"] .fil{right:0}
-  #root[data-edge="left"] .fil{left:0}
-  #root[data-edge="right"] .fil-a,#root[data-edge="left"] .fil-a{top:calc(50% - var(--sh) / 2 - var(--fil))}
-  #root[data-edge="right"] .fil-b,#root[data-edge="left"] .fil-b{bottom:calc(50% - var(--sh) / 2 - var(--fil))}
-  #root:is([data-edge="right"],[data-edge="left"]):is([data-state="open"],[data-peek="1"],[data-peek="2"]) .fil-a{top:0}
-  #root:is([data-edge="right"],[data-edge="left"]):is([data-state="open"],[data-peek="1"],[data-peek="2"]) .fil-b{bottom:0}
-  #root[data-edge="right"] .fil-a{background:radial-gradient(circle at 0 0,transparent calc(var(--fil) - .5px),var(--ink) calc(var(--fil) + .5px))}
-  #root[data-edge="right"] .fil-b{background:radial-gradient(circle at 0 100%,transparent calc(var(--fil) - .5px),var(--ink) calc(var(--fil) + .5px))}
-  #root[data-edge="left"] .fil-a{background:radial-gradient(circle at 100% 0,transparent calc(var(--fil) - .5px),var(--ink) calc(var(--fil) + .5px))}
-  #root[data-edge="left"] .fil-b{background:radial-gradient(circle at 100% 100%,transparent calc(var(--fil) - .5px),var(--ink) calc(var(--fil) + .5px))}
+  /* Fillets: the concave curve between island and screen edge — a 12 px square of ink with a circle
+     punched out of its outer corner, on each side of the island */
+  .fil{position:absolute;width:12px;height:12px;pointer-events:none}
+  #root[data-edge="free"] .fil{display:none}
+  #root[data-edge="top"] .fil-a{top:0;left:-12px;background:radial-gradient(circle at 0 100%,transparent 11.5px,var(--ink) 12.5px)}
+  #root[data-edge="top"] .fil-b{top:0;right:-12px;background:radial-gradient(circle at 100% 100%,transparent 11.5px,var(--ink) 12.5px)}
+  #root[data-edge="bottom"] .fil-a{bottom:0;left:-12px;background:radial-gradient(circle at 0 0,transparent 11.5px,var(--ink) 12.5px)}
+  #root[data-edge="bottom"] .fil-b{bottom:0;right:-12px;background:radial-gradient(circle at 100% 0,transparent 11.5px,var(--ink) 12.5px)}
+  #root[data-edge="right"] .fil-a{right:0;top:-12px;background:radial-gradient(circle at 0 0,transparent 11.5px,var(--ink) 12.5px)}
+  #root[data-edge="right"] .fil-b{right:0;bottom:-12px;background:radial-gradient(circle at 0 100%,transparent 11.5px,var(--ink) 12.5px)}
+  #root[data-edge="left"] .fil-a{left:0;top:-12px;background:radial-gradient(circle at 100% 0,transparent 11.5px,var(--ink) 12.5px)}
+  #root[data-edge="left"] .fil-b{left:0;bottom:-12px;background:radial-gradient(circle at 100% 100%,transparent 11.5px,var(--ink) 12.5px)}
 
-  /* ---------- Closed: the compact pill ---------- */
-  #closed{position:absolute;display:flex;align-items:center;gap:7px;cursor:pointer;color:var(--text);
-    transition:opacity .2s var(--soft),transform .45s var(--spring)}
-  #root[data-edge="top"] #closed,#root[data-mode="free"] #closed{top:0;left:50%;width:var(--pw);height:var(--ph);margin-left:calc(var(--pw) / -2);padding:0 12px 0 6px}
-  #root[data-mode="free"] #closed{height:var(--fh)}
-  #root[data-edge="right"][data-mode="dock"] #closed,#root[data-edge="left"][data-mode="dock"] #closed{
-    top:50%;width:var(--sw);height:var(--sh);margin-top:calc(var(--sh) / -2);flex-direction:column;justify-content:center;gap:6px;padding:8px 0}
-  #root[data-edge="right"][data-mode="dock"] #closed{right:0}
-  #root[data-edge="left"][data-mode="dock"] #closed{left:0}
-  #root:is([data-state="open"],[data-peek="1"],[data-peek="2"],[data-drag="1"]) #closed{opacity:0;pointer-events:none;transform:scale(.85)}
-  .c-ring{position:relative;width:24px;height:24px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;font-size:9.5px;font-weight:700}
+  /* Layers: each keeps the size of its own state and is anchored like the island, so the island
+     growing or shrinking reveals it rather than squashing it */
+  .layer{position:absolute;opacity:0;pointer-events:none;transition:opacity .16s var(--soft)}
+  .layer.on{opacity:1;pointer-events:auto;transition:opacity .26s var(--soft) .07s}
+  #root:is([data-edge="top"],[data-edge="free"]) .layer{top:0;left:50%;transform:translateX(-50%)}
+  #root[data-edge="bottom"] .layer{bottom:0;left:50%;transform:translateX(-50%)}
+  #root[data-edge="right"] .layer{right:0;top:50%;transform:translateY(-50%)}
+  #root[data-edge="left"] .layer{left:0;top:50%;transform:translateY(-50%)}
+
+  /* closed pill */
+  #lClosed{display:flex;align-items:center;gap:7px;padding:0 12px 0 5px;cursor:pointer}
+  #root:is([data-edge="left"],[data-edge="right"]) #lClosed{flex-direction:column;justify-content:center;gap:6px;padding:8px 0}
+  .c-ring{position:relative;width:22px;height:22px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700}
   .c-ring svg{position:absolute;inset:0;width:100%;height:100%}
-  .c-ring img{width:13px!important;height:13px!important;border-radius:3px}
-  .c-ring .mark{display:flex;width:12px;height:12px;color:var(--text)} .c-ring .mark svg{position:static;width:12px;height:12px;fill:currentColor}
-  .c-pct{font-size:12.5px;font-weight:700;font-variant-numeric:tabular-nums}
+  .c-ring img{width:12px!important;height:12px!important;border-radius:3px}
+  .c-ring .mark{display:flex;width:12px;height:12px} .c-ring .mark svg{position:static;width:12px;height:12px;fill:currentColor}
+  .c-pct{font-size:12px;font-weight:700;font-variant-numeric:tabular-nums}
   .c-gap{flex:1}
-  .c-reset{font-size:11.5px;color:var(--mute);font-variant-numeric:tabular-nums;white-space:nowrap}
-  .c-dot{width:6px;height:6px;border-radius:50%;background:var(--accent);opacity:.8;margin:auto}
-  #root:is([data-edge="right"],[data-edge="left"])[data-mode="dock"] .c-pct{font-size:10.5px}
-  #root:is([data-edge="right"],[data-edge="left"])[data-mode="dock"] .c-reset{font-size:9.5px;writing-mode:vertical-rl;transform:rotate(180deg)}
-  .c-work{width:6px;height:6px;border-radius:50%;background:#28E07B;box-shadow:0 0 6px #28E07B;animation:pulse 1.1s steps(6) infinite}
+  .c-reset{font-size:11px;color:var(--mute);font-variant-numeric:tabular-nums;white-space:nowrap}
+  .c-dot{width:6px;height:6px;border-radius:50%;background:var(--accent);opacity:.85;margin:auto}
+  #root:is([data-edge="left"],[data-edge="right"]) .c-pct{font-size:10px}
+  #root:is([data-edge="left"],[data-edge="right"]) .c-reset{font-size:9px;writing-mode:vertical-rl;transform:rotate(180deg)}
+  .c-work{width:6px;height:6px;border-radius:50%;background:#28E07B;box-shadow:0 0 6px #28E07B;animation:pulse 1.1s steps(6) infinite;flex:0 0 auto}
 
-  /* ---------- Peek: Live Activity and alerts ---------- */
-  #live{position:absolute;display:flex;align-items:center;gap:9px;padding:0 14px 0 8px;cursor:pointer;
-    opacity:0;pointer-events:none;transform:scale(.92);transition:opacity .18s var(--soft),transform .5s var(--spring)}
-  #root[data-edge="top"] #live{inset:0 var(--fil)}
-  #root:is([data-edge="right"],[data-edge="left"]) #live{inset:var(--fil) 0}
-  #root[data-mode="free"] #live{inset:0}
-  #root[data-edge="right"][data-mode="dock"] #live{padding-left:10px}
-  #root[data-edge="left"][data-mode="dock"] #live{padding:0 10px 0 14px}
-  #root[data-state="idle"]:is([data-peek="1"],[data-peek="2"]) #live{opacity:1;pointer-events:auto;transform:none;transition-delay:.08s}
-  .lv-ic{flex:0 0 auto;width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;position:relative;font-size:12px;font-weight:700;color:var(--text)}
+  /* peek: Live Activity / alert */
+  #lLive{display:flex;align-items:center;gap:9px;padding:0 14px 0 8px;cursor:pointer}
+  .lv-ic{flex:0 0 auto;width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;position:relative;font-size:12px;font-weight:700}
   #root[data-peek="2"] .lv-ic{width:38px;height:38px}
   .lv-ic img{width:16px!important;height:16px!important;border-radius:4px}
-  .lv-ic .mark{display:flex;width:16px;height:16px;color:var(--text)}
-  .lv-ic .mark svg{width:16px;height:16px;fill:currentColor}
+  .lv-ic .mark{display:flex;width:16px;height:16px} .lv-ic .mark svg{width:16px;height:16px;fill:currentColor}
   .lv-ic svg.lv-ring{position:absolute;inset:0;width:100%;height:100%}
   .lv-txt{min-width:0;flex:1;line-height:1.25}
   .lv-t{font-size:12.5px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -121,49 +87,26 @@
   .lv-s{font-size:11px;color:var(--mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .lv-v{font-size:13px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}
 
-  /* ---------- Open: the panel ---------- */
-  #panel{position:absolute;display:flex;flex-direction:column;opacity:0;pointer-events:none;
-    transform:translateY(-8px) scale(.97);transition:opacity .16s var(--soft),transform .4s var(--soft)}
-  #root[data-edge="top"] #panel{inset:0 var(--fil);padding:10px 16px 14px;transform-origin:top center}
-  #root[data-edge="right"][data-mode="dock"] #panel{inset:var(--fil) 0;padding:14px 14px 14px 16px;transform:translateX(10px) scale(.97);transform-origin:right center}
-  #root[data-edge="left"][data-mode="dock"] #panel{inset:var(--fil) 0;padding:14px 16px 14px 14px;transform:translateX(-10px) scale(.97);transform-origin:left center}
-  #root[data-mode="free"] #panel{inset:0;padding:12px 16px 14px}
-  #root[data-state="open"] #panel{opacity:1;pointer-events:auto;transform:none;transition:opacity .26s var(--soft) .1s,transform .6s var(--spring) .06s}
-
-  /* tabs: a segmented control with a sliding ink */
-  #tabs{position:relative;display:flex;gap:2px;padding:3px;border-radius:12px;background:var(--ink2);align-self:center;flex:0 0 auto;cursor:grab}
-  #tabs button{position:relative;z-index:1;font-family:inherit;font-size:12px;font-weight:600;line-height:1;color:var(--mute);background:transparent;border:0;border-radius:9px;padding:7px 13px;cursor:pointer;transition:color .2s}
-  #tabs button.on{color:var(--text)}
-  #tabs button[hidden]{display:none}
-  #tabInk{position:absolute;z-index:0;top:3px;bottom:3px;left:0;width:0;border-radius:9px;background:var(--ink3);box-shadow:0 1px 0 rgba(255,255,255,.05) inset;
-    transition:transform .5s var(--spring),width .5s var(--spring)}
-  #pagesWrap{position:relative;flex:1;min-height:0;overflow:hidden;margin-top:10px}
-  #pages{display:flex;height:100%;transition:transform .55s var(--spring)}
-  .page{flex:0 0 100%;min-width:0;height:100%;overflow-y:auto;overflow-x:hidden;padding:2px 2px 6px;scrollbar-width:thin;scrollbar-color:var(--line) transparent}
-  .page::-webkit-scrollbar{width:6px} .page::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
-  .page.enter > *{animation:rise .45s var(--spring) both}
-  .page.enter > *:nth-child(2){animation-delay:.03s} .page.enter > *:nth-child(3){animation-delay:.06s} .page.enter > *:nth-child(4){animation-delay:.09s}
-  @keyframes rise{from{opacity:0;transform:translateY(6px)}}
-
-  /* Usage: a tile per provider */
-  .sum{font-size:11.5px;color:var(--mute);margin:0 2px 10px;display:flex;gap:10px;flex-wrap:wrap}
-  .sum b{color:var(--text);font-weight:650}
-  .tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));gap:8px}
-  .tile{background:var(--ink2);border:1px solid transparent;border-radius:16px;padding:12px 8px 10px;display:flex;flex-direction:column;align-items:center;gap:5px;cursor:pointer;
-    transition:transform .35s var(--spring),border-color .2s,background .2s}
-  .tile:hover{transform:translateY(-2px);border-color:var(--line);background:var(--ink3)}
-  .tile:active{transform:scale(.96)}
-  .t-name{font-size:11.5px;color:var(--mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
-  .t-val{font-size:15px;font-weight:700;font-variant-numeric:tabular-nums}
-  .t-sub{font-size:10.5px;color:var(--mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;min-height:13px}
-  .ringwrap{position:relative;width:56px;height:56px}
+  /* open: the slim strip of provider rings */
+  #lStrip{display:flex;align-items:center;justify-content:center;gap:8px;padding:12px}
+  #root:is([data-edge="left"],[data-edge="right"]) #lStrip{flex-direction:column}
+  .cell{display:flex;flex-direction:column;align-items:center;gap:4px;cursor:pointer;border-radius:14px;padding:4px 2px;width:58px;
+    opacity:0;transform:scale(.6);transition:opacity .2s,transform .5s var(--ew),background .15s}
+  .layer.on .cell{opacity:1;transform:none;transition-delay:calc(60ms + var(--i,0) * 35ms)}
+  .cell:hover,.cell.hot{background:var(--ink2)}
+  .ringwrap{position:relative;width:46px;height:46px}
   .ringwrap > svg.ring{position:absolute;inset:0;overflow:visible}
-  .glyph{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:700;color:var(--text);letter-spacing:-.5px}
-  .glyph.small{font-size:14px}
+  .glyph{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:700;letter-spacing:-.5px}
+  .glyph.small{font-size:12px}
   .glyph img,.glyph svg{display:block;pointer-events:none}
-  .glyph .mark{display:block;width:24px;height:24px;color:var(--text)} .glyph .mark svg{width:24px;height:24px;fill:currentColor}
-  .glyph img.png{width:24px;height:24px;object-fit:contain}
-  .glyph img.appicon{width:28px;height:28px;border-radius:8px;object-fit:cover}
+  .glyph .mark{display:block;width:20px;height:20px} .glyph .mark svg{width:20px;height:20px;fill:currentColor}
+  .glyph img.png{width:20px;height:20px;object-fit:contain}
+  .glyph img.appicon{width:24px;height:24px;border-radius:7px;object-fit:cover}
+  .pct{font-size:12px;font-weight:700;font-variant-numeric:tabular-nums}
+  .more{width:34px;height:34px;flex:0 0 auto;border-radius:50%;border:0;background:var(--ink2);color:var(--mute);font-size:16px;line-height:1;cursor:pointer;
+    opacity:0;transform:scale(.6);transition:opacity .2s,transform .5s var(--ew),background .15s,color .15s}
+  .layer.on .more{opacity:1;transform:none;transition-delay:calc(60ms + var(--i,0) * 35ms)}
+  .more:hover{background:var(--ink3);color:var(--text)}
   .dim{opacity:.55}
   @keyframes spin{to{transform:rotate(360deg)}}
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
@@ -171,7 +114,38 @@
   .arc-spin{animation:spin 1.2s steps(12) infinite;transform-origin:center;transform-box:fill-box}
   .arc-pulse{animation:pulse 1.1s steps(6) infinite}
 
-  /* Details */
+  /* the detail card beside the strip */
+  #card{position:absolute;width:262px;max-height:calc(100% - 16px);overflow-y:auto;overflow-x:hidden;background:var(--ink);border-radius:18px;padding:14px;
+    box-shadow:0 0 0 1px var(--line),0 12px 30px rgba(0,0,0,.4);opacity:0;pointer-events:none;transform:scale(.94);
+    transition:opacity .16s var(--soft),transform .45s var(--ew);scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+  #card.show{opacity:1;pointer-events:auto;transform:none}
+
+  /* panel */
+  #lPanel{display:flex;flex-direction:column;padding:10px 14px 14px}
+  #root[data-edge="bottom"] #lPanel{padding:14px 14px 10px}
+  .ptop{display:flex;align-items:center;gap:8px;flex:0 0 auto;cursor:grab}
+  .back{width:30px;height:30px;border-radius:50%;border:0;background:var(--ink2);color:var(--mute);font-size:15px;cursor:pointer;flex:0 0 auto}
+  .back:hover{background:var(--ink3);color:var(--text)}
+  #tabs{position:relative;display:flex;gap:2px;padding:3px;border-radius:12px;background:var(--ink2);margin:0 auto}
+  #tabs button{position:relative;z-index:1;font-family:inherit;font-size:12px;font-weight:600;line-height:1;color:var(--mute);background:transparent;border:0;border-radius:9px;padding:7px 12px;cursor:pointer;transition:color .2s}
+  #tabs button.on{color:var(--text)}
+  #tabs button[hidden]{display:none}
+  #tabInk{position:absolute;z-index:0;top:3px;bottom:3px;left:0;width:0;border-radius:9px;background:var(--ink3);transition:transform .5s var(--ew),width .5s var(--ew)}
+  #pagesWrap{position:relative;flex:1;min-height:0;overflow:hidden;margin-top:10px}
+  #pages{display:flex;height:100%;transition:transform .55s var(--ew)}
+  .page{flex:0 0 100%;min-width:0;height:100%;overflow-y:auto;overflow-x:hidden;padding:2px 2px 6px;scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+  .page.enter > *{animation:rise .45s var(--ew) both}
+  .page.enter > *:nth-child(2){animation-delay:.03s} .page.enter > *:nth-child(3){animation-delay:.06s} .page.enter > *:nth-child(4){animation-delay:.09s}
+  @keyframes rise{from{opacity:0;transform:translateY(6px)}}
+  .sum{font-size:11.5px;color:var(--mute);margin:0 2px 10px;display:flex;gap:10px;flex-wrap:wrap}
+  .sum b{font-weight:650}
+  .tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(104px,1fr));gap:8px}
+  .tile{background:var(--ink2);border:1px solid transparent;border-radius:16px;padding:12px 8px 10px;display:flex;flex-direction:column;align-items:center;gap:5px;cursor:pointer;transition:transform .35s var(--ew),border-color .2s,background .2s}
+  .tile:hover{transform:translateY(-2px);border-color:var(--line);background:var(--ink3)}
+  .tile .ringwrap{width:52px;height:52px}
+  .t-name{font-size:11.5px;color:var(--mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+  .t-val{font-size:15px;font-weight:700;font-variant-numeric:tabular-nums}
+  .t-sub{font-size:10.5px;color:var(--mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;min-height:13px}
   .chips{display:flex;gap:6px;overflow-x:auto;padding-bottom:8px;scrollbar-width:none}
   .chips::-webkit-scrollbar{display:none}
   .chip{flex:0 0 auto;display:flex;align-items:center;gap:6px;font-size:11.5px;font-weight:600;color:var(--mute);background:var(--ink2);border:1px solid transparent;border-radius:99px;padding:5px 10px 5px 6px;cursor:pointer;transition:all .2s}
@@ -182,15 +156,15 @@
   .d-card{background:var(--ink2);border-radius:16px;padding:14px}
   .c-head{display:flex;align-items:center;gap:8px;margin-bottom:2px}
   .c-head img{width:16px!important;height:16px!important;border-radius:4px}
-  .c-head .mark{display:inline-flex;width:16px;height:16px;color:var(--text)} .c-head .mark svg{width:16px;height:16px;fill:currentColor}
+  .c-head .mark{display:inline-flex;width:16px;height:16px} .c-head .mark svg{width:16px;height:16px;fill:currentColor}
   .c-title{font-size:14px;font-weight:700}
-  .c-sub{font-size:11px;color:var(--mute);margin-bottom:8px}
+  .c-sub{font-size:11px;color:var(--mute);margin-bottom:6px}
   .win{margin-top:12px}
   .w-row{display:flex;justify-content:space-between;align-items:baseline;font-size:12px;flex-wrap:wrap;column-gap:8px}
   .w-label{font-weight:600;white-space:nowrap}
   .w-reset{color:var(--mute);font-size:11px;white-space:nowrap;margin-left:auto}
   .w-track{height:5px;border-radius:3px;background:rgba(255,255,255,.08);margin:6px 0 4px;overflow:hidden}
-  .w-fill{height:100%;border-radius:3px;transition:width .6s var(--spring)}
+  .w-fill{height:100%;border-radius:3px;transition:width .6s var(--ew)}
   .w-used{font-size:11px;color:var(--mute)}
   .w-fc{font-size:11px;margin-top:3px}
   .spark{display:block;width:100%;height:24px;margin-top:5px}
@@ -203,10 +177,9 @@
   .s-jump:hover{background:var(--ink3);color:var(--text)}
   .s-title{min-width:0;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .s-go{font-size:11px;opacity:0;transition:opacity .15s} .s-jump:hover .s-go{opacity:.7}
-  .btn{font-family:inherit;font-size:11.5px;font-weight:600;color:var(--text);background:var(--ink3);border:1px solid var(--line);border-radius:10px;padding:7px 11px;cursor:pointer;transition:transform .3s var(--spring),background .15s}
+  .btn{font-family:inherit;font-size:11.5px;font-weight:600;color:var(--text);background:var(--ink3);border:1px solid var(--line);border-radius:10px;padding:7px 11px;cursor:pointer;transition:transform .3s var(--ew),background .15s}
   .btn:hover{background:var(--line)} .btn:active{transform:scale(.95)}
   .btn.acc{background:var(--accent);color:#08080a;border-color:transparent}
-  /* Quota Tracker groups (9Router, several Command Code accounts) */
   .q-group{margin-top:12px;padding-top:10px;border-top:1px solid var(--line)}
   .q-group:first-child{margin-top:4px;border-top:none;padding-top:0}
   .q-head{display:flex;align-items:center;gap:6px;min-width:0}
@@ -223,8 +196,6 @@
   .q-bar i{display:block;height:100%;border-radius:2px}
   .q-msg{font-size:11px;color:#c8a24a;margin-top:6px;line-height:1.4}
   .q-tip{font-size:11px;line-height:1.4;color:#bfeed3;background:rgba(0,255,136,.07);border:1px solid rgba(0,255,136,.18);border-radius:10px;padding:7px 9px;margin:4px 0 8px}
-
-  /* Settings and 9Router connections: rows, switches, segments, swatches */
   .sec{background:var(--ink2);border-radius:16px;padding:12px 14px;margin-bottom:8px}
   .sec h4{margin:0 0 8px;font-size:11px;font-weight:650;color:var(--mute);text-transform:uppercase;letter-spacing:.5px}
   .row{display:flex;align-items:center;gap:10px;min-height:32px}
@@ -232,16 +203,15 @@
   .row .rl{flex:1;min-width:0;font-size:12.5px}
   .row .rs{font-size:10.5px;color:var(--mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .sw{position:relative;width:38px;height:22px;flex:0 0 auto;border-radius:99px;background:var(--ink3);border:0;cursor:pointer;transition:background .25s}
-  .sw::before{content:"";position:absolute;left:3px;top:3px;width:16px;height:16px;border-radius:50%;background:#f2f2f5;transition:transform .45s var(--spring)}
+  .sw::before{content:"";position:absolute;left:3px;top:3px;width:16px;height:16px;border-radius:50%;background:#f2f2f5;transition:transform .45s var(--ew)}
   .sw.on{background:var(--accent)} .sw.on::before{transform:translateX(16px);background:#fff}
-  #root[data-theme="glass"] .sw.on::before,#root[data-theme="graphite"] .sw.on::before{background:#111}
+  #root:is([data-theme="glass"],[data-theme="graphite"]) .sw.on::before{background:#111}
   .sw:disabled{opacity:.5;cursor:default}
   .seg{display:flex;gap:2px;padding:3px;border-radius:11px;background:var(--ink3);flex-wrap:wrap}
   .seg button{flex:1;font-family:inherit;font-size:11.5px;font-weight:600;color:var(--mute);background:transparent;border:0;border-radius:8px;padding:6px 8px;cursor:pointer;transition:all .25s var(--soft);white-space:nowrap}
   .seg button.on{background:var(--accent);color:#08080a}
-  #root[data-theme="glass"] .seg button.on{color:#000}
   .swatches{display:flex;gap:10px;flex-wrap:wrap}
-  .swatch{width:30px;height:30px;border-radius:50%;border:2px solid transparent;cursor:pointer;position:relative;transition:transform .35s var(--spring)}
+  .swatch{width:30px;height:30px;border-radius:50%;border:2px solid transparent;cursor:pointer;position:relative;transition:transform .35s var(--ew)}
   .swatch:hover{transform:scale(1.1)} .swatch.on{border-color:var(--text)}
   .swatch i{position:absolute;right:-1px;bottom:-1px;width:12px;height:12px;border-radius:50%;border:2px solid var(--ink2)}
   .pchips{display:flex;gap:6px;flex-wrap:wrap}
@@ -249,38 +219,47 @@
   .foot .by{margin-left:auto;font-size:10.5px;color:var(--mute)}
   .conn-g{font-size:10.5px;color:var(--mute);text-transform:uppercase;letter-spacing:.5px;margin:10px 2px 4px}
 
-  /* ---------- Dragging: the island travels as a plain pill ---------- */
-  #dragpill{position:absolute;left:50%;top:50%;width:150px;height:44px;margin:-22px 0 0 -75px;border-radius:22px;background:var(--ink);
-    box-shadow:0 0 0 1px var(--line),0 10px 26px rgba(0,0,0,.45);display:flex;align-items:center;gap:8px;padding:0 14px 0 9px;
-    opacity:0;transform:scale(.6);pointer-events:none;transition:opacity .15s,transform .5s var(--spring)}
-  #root[data-drag="1"] #dragpill{opacity:1;transform:scale(1)}
-  #root[data-drag="1"] :is(#shape,.fil,#closed,#live,#panel){opacity:0!important;pointer-events:none!important}
+  /* dragging: the island travels as a plain pill */
+  #dragpill{position:absolute;left:50%;top:50%;width:150px;height:40px;margin:-20px 0 0 -75px;border-radius:20px;background:var(--ink);
+    box-shadow:0 0 0 1px var(--line),0 10px 26px rgba(0,0,0,.45);display:flex;align-items:center;gap:7px;padding:0 12px 0 6px;
+    opacity:0;transform:scale(.6);pointer-events:none;transition:opacity .15s,transform .5s var(--ew)}
+  #root[data-drag="1"] #dragpill{opacity:1;transform:scale(1.04)}
+  #root[data-drag="1"] :is(#island,#card){opacity:0!important;pointer-events:none!important}
 
-  #notice{position:absolute;left:16px;right:16px;bottom:10px;font-size:10.5px;color:var(--mute);background:var(--ink2);border-radius:8px;padding:5px 8px;display:none}
+  #notice{position:absolute;left:12px;right:12px;bottom:8px;font-size:10.5px;color:var(--mute);background:var(--ink2);border-radius:8px;padding:5px 8px;display:none}
   #notice.show{display:block}
 </style>
 </head>
 <body>
-<div id="root" data-edge="top" data-mode="dock" data-state="idle" data-peek="0" data-theme="midnight">
-  <div id="shape"></div>
-  <div class="fil fil-a"></div><div class="fil fil-b"></div>
-  <div id="closed"></div>
-  <div id="live"></div>
-  <div id="panel">
-    <div id="tabs">
-      <div id="tabInk"></div>
-      <button data-tab="usage" class="on">Usage</button>
-      <button data-tab="detail">Details</button>
-      <button data-tab="r9" hidden>9Router</button>
-      <button data-tab="settings">Settings</button>
+<div id="root" data-edge="right" data-state="idle" data-peek="0" data-theme="midnight">
+  <div id="island">
+    <div class="fil fil-a"></div><div class="fil fil-b"></div>
+    <div class="clip">
+      <div class="layer on" id="lClosed"></div>
+      <div class="layer" id="lLive"></div>
+      <div class="layer" id="lStrip"></div>
+      <div class="layer" id="lPanel">
+        <div class="ptop">
+          <button class="back" data-act="back" title="Back">‹</button>
+          <div id="tabs">
+            <div id="tabInk"></div>
+            <button data-tab="usage" class="on">Usage</button>
+            <button data-tab="detail">Details</button>
+            <button data-tab="r9" hidden>9Router</button>
+            <button data-tab="settings">Settings</button>
+          </div>
+          <span style="width:30px"></span>
+        </div>
+        <div id="pagesWrap"><div id="pages">
+          <section class="page" data-page="usage"></section>
+          <section class="page" data-page="detail"></section>
+          <section class="page" data-page="r9"></section>
+          <section class="page" data-page="settings"></section>
+        </div></div>
+      </div>
     </div>
-    <div id="pagesWrap"><div id="pages">
-      <section class="page" data-page="usage"></section>
-      <section class="page" data-page="detail"></section>
-      <section class="page" data-page="r9"></section>
-      <section class="page" data-page="settings"></section>
-    </div></div>
   </div>
+  <div id="card"></div>
   <div id="dragpill"></div>
   <div id="notice"></div>
 </div>
@@ -290,7 +269,7 @@ const listen = window.__TAURI__.event.listen;
 
 /* Colour ramp (upstream palette values) */
 const AMPLE='#00FF88', WATCH='#F2FF00', CRIT='#FF3F00';
-const TRACK='#303030', AMBER='#FFBF00', RUNGREEN='#28E07B';
+const AMBER='#FFBF00', RUNGREEN='#28E07B';
 const tone=f=> f>=0.8?CRIT : f>=0.5?WATCH : AMPLE;
 
 let usage={status:'',windows:[],fetched_at:0,note:''};
@@ -300,71 +279,107 @@ let agSnap={status:'absent',windows:[],fetched_at:0,note:''};
 let ccSnap={status:'absent',windows:[],fetched_at:0,note:''};
 let r9Snap={status:'absent',windows:[],fetched_at:0,note:''};
 let dsSnap={status:'absent',windows:[],fetched_at:0,note:''};
-let cfg={opacity:1,scale:1,edge:'top',drag_enabled:false,live_activity:true,alert_levels:[80,95],theme:'midnight',hide_fullscreen:true,hidden_providers:[]};
-let glyphs={};
-let activity=[];
-let stateSnap={sessions:[],agg:'idle'};
+let cfg={opacity:1,scale:1,edge:'right',drag_enabled:false,live_activity:true,alert_levels:[80,95],theme:'midnight',hide_fullscreen:true,hidden_providers:[]};
+let glyphs={}, activity=[], stateSnap={sessions:[],agg:'idle'};
 
 const $=id=>document.getElementById(id);
-const root=$('root'), closedEl=$('closed'), live=$('live'), panel=$('panel'), pagesEl=$('pages');
+const root=$('root'), island=$('island'), cardEl=$('card'), pagesEl=$('pages');
+const L={closed:$('lClosed'), live:$('lLive'), strip:$('lStrip'), panel:$('lPanel')};
 
-/* Geometry mirrored from main.rs (FIL, PILL_*, SIDE_*, FREE_H, LIVE, TOAST, OPEN_*, DRAG_*): only
-   used to know which window width is "design size", for the DPI / size-setting zoom correction. */
-const GEO={fil:12,pill:[220,34],side:[34,150],freeH:40,live:[300,42],toast:[380,60],openTop:[560,470],openSide:[430,520],drag:[170,60]};
+/* Window size per edge, mirrored from main.rs (WIN_WIDE / WIN_TALL), plus the drag pill (DRAG_*):
+   the "design width" the size-setting zoom is measured against */
+const WIN={wide:[620,520],tall:[480,640],drag:[170,60]};
 const THEMES=[['midnight','Midnight','#000000','#0A84FF'],['graphite','Graphite','#1b1b1e','#c7c7d1'],['ocean','Ocean','#03131f','#22d3ee'],
   ['sunset','Sunset','#170a0b','#fb923c'],['forest','Forest','#06130c','#34d399'],['rose','Rose','#16080f','#f472b6'],['glass','Glass','#2a2a30','#ffffff']];
 
-let state='idle', pendingShrink=null;
-// Declared up here: designWidth() reads these during the first reportDpr(), before the rest of the script has run
-let press=null, dragging=false, peekWin=0;
-const dockEdge=()=> cfg.edge==='left'||cfg.edge==='right' ? cfg.edge : 'top';
+// Declared up here: designWidth() reads them during the first reportDpr()
+let state='idle', peek=0, press=null, dragging=false, edge='right';
+const side=()=> edge==='left'||edge==='right';
 
 /* ---------- Springs ----------
-   CSS has no spring timing function, but linear() can carry one: a damped spring is simulated once
-   and sampled into linear(0, …, 1). Overshoot and settle come for free; each property animates on
-   its own curve, so width, height and corners move together as one liquid shape. */
-function springCurve(stiffness,damping){
+   Each property gets its own spring (the values Bloom tunes its island with: width 400/31,
+   height 450/29, corners stiffer), simulated once and sampled into CSS linear(), so the three move
+   as one liquid shape with a small overshoot — and the compositor runs it, no animation frames needed. */
+function spring(k,c){
   let x=0,v=0,t=0; const dt=1/120, pts=[0];
-  while(t<2){ const a=-stiffness*(x-1)-damping*v; v+=a*dt; x+=v*dt; t+=dt; pts.push(x); if(t>.2&&Math.abs(x-1)<.001&&Math.abs(v)<.01) break; }
-  const step=Math.max(1,Math.floor(pts.length/60)), s=[];
+  while(t<2){ const a=-k*(x-1)-c*v; v+=a*dt; x+=v*dt; t+=dt; pts.push(x); if(t>.15&&Math.abs(x-1)<.001&&Math.abs(v)<.01) break; }
+  const step=Math.max(1,Math.floor(pts.length/64)), s=[];
   for(let i=0;i<pts.length;i+=step) s.push(+pts[i].toFixed(4));
   s.push(1);
   return {css:`linear(${s.join(',')})`, ms:Math.round(t*1000)};
 }
 if(CSS.supports('transition-timing-function','linear(0, 1)')){
-  const open=springCurve(210,19), soft=springCurve(260,34);
-  root.style.setProperty('--spring',open.css);
-  root.style.setProperty('--soft',soft.css);
-  root.style.setProperty('--open-ms',open.ms+'ms');
-  root.style.setProperty('--close-ms',soft.ms+'ms');
+  const w=spring(400,31), h=spring(450,29), r=spring(1000,40), soft=spring(500,45);
+  for(const [k,v] of [['--ew',w.css],['--eh',h.css],['--er',r.css],['--soft',soft.css],['--dw',w.ms+'ms'],['--dh',h.ms+'ms'],['--dr',r.ms+'ms']]) root.style.setProperty(k,v);
 }
-const CLOSE_MS=Math.max(260,parseInt(getComputedStyle(root).getPropertyValue('--close-ms'))||380);
+
+/* ---------- Island geometry ----------
+   Every state is a width, a height and a corner radius; the flush edge keeps square corners. */
+function stripSize(){
+  const n=providers().length+1; // + the "more" button
+  const cell=side()?64:62, gap=8;
+  return side() ? [78, Math.min(n*cell+(n-1)*gap+24, WIN.tall[1]-40)] : [Math.min(n*cell+(n-1)*gap+24, WIN.wide[0]-40), 90];
+}
+function geom(){
+  if(state==='panel') return side()?[400,540,28]:[540,440,28];
+  if(state==='open'){ const [w,h]=stripSize(); return [w,h,26]; }
+  if(peek===2) return side()?[360,64,30]:[380,60,28];
+  if(peek===1) return side()?[300,52,26]:[300,42,21];
+  if(edge==='free') return [200,38,19];
+  return side()?[32,140,16]:[200,32,16];
+}
+function radius(r){
+  switch(edge){
+    case 'top': return `0 0 ${r}px ${r}px`;
+    case 'bottom': return `${r}px ${r}px 0 0`;
+    case 'right': return `${r}px 0 0 ${r}px`;
+    case 'left': return `0 ${r}px ${r}px 0`;
+    default: return `${r}px`;
+  }
+}
+const layerSize={
+  closed:()=>edge==='free'?[200,38]:(side()?[32,140]:[200,32]),
+  live:()=>side()?(peek===2?[360,64]:[300,52]):(peek===2?[380,60]:[300,42]),
+  strip:()=>stripSize(),
+  panel:()=>side()?[400,540]:[540,440],
+};
+function applyShape(){
+  const [w,h,r]=geom();
+  island.style.width=w+'px'; island.style.height=h+'px'; island.style.borderRadius=radius(r);
+  const active = state==='panel'?'panel' : state==='open'?'strip' : peek?'live':'closed';
+  for(const [k,el] of Object.entries(L)){
+    const [lw,lh]=layerSize[k]();
+    el.style.width=lw+'px'; el.style.height=lh+'px';
+    el.classList.toggle('on',k===active);
+  }
+  root.dataset.state=state; root.dataset.peek=String(peek);
+  burstRects();
+}
 
 /* ---------- Open / close ---------- */
-function openNotch(){
-  clearTimeout(pendingShrink); clearTimeout(dwellTimer);
-  if(state==='open') return;
-  state='open';
-  root.dataset.state='open'; // synchronously: requestAnimationFrame is not reliably scheduled in a never-focused window
-  renderPanel(true);
-  invoke('notch_expand',{on:true}).catch(e=>notice('notch_expand failed: '+e));
-  armWatchdog();
+function openStrip(){
+  clearTimeout(closeT); clearTimeout(dwellT);
+  if(state!=='idle') return;
+  state='open'; renderStrip(); applyShape();
+  invoke('notch_expand',{on:true}).catch(()=>{});
 }
-function closeNotch(){
-  clearTimeout(dwellTimer);
+function openPanel(tab){
+  clearTimeout(closeT);
+  hideCard(true);
+  if(tab) curTab=tab;
+  state='panel'; applyShape(); setTab(curTab,true);
+  invoke('notch_expand',{on:true}).catch(()=>{});
+}
+function closeAll(){
+  clearTimeout(dwellT);
   if(state==='idle') return;
-  state='idle';
-  root.dataset.state='idle';
-  invoke('set_expanded',{on:false,rects:null}).catch(()=>{});
-  // The shape springs back into the pill first; the window follows once it has
-  clearTimeout(pendingShrink);
-  pendingShrink=setTimeout(()=>invoke('notch_expand',{on:false}).catch(()=>{}),CLOSE_MS);
-  setTimeout(pumpToasts,CLOSE_MS+60);
-  needLeave=true; reopenAfter=Date.now()+CLOSE_MS+900;
+  hideCard(true);
+  state='idle'; applyShape();
+  invoke('notch_expand',{on:false}).catch(()=>{});
+  setTimeout(pumpToasts,500);
 }
-let needLeave=false, reopenAfter=0;
 
-// "Is it working?" per provider: Claude from the four-state engine, the others from the activity probe. Returns running | attention | idle
+// "Is it working?" per provider: Claude from the four-state engine, the others from the activity probe
 function workState(id){
   if(id==='claude'){
     if(stateSnap.agg==='running') return 'running';
@@ -394,7 +409,6 @@ function allProviders(){
   if(dsSnap.status!=='absent') list.push({id:'deepseek',name:'DeepSeek',glyph:'Ds',snap:dsSnap});
   return list;
 }
-// Shown providers, in the chosen order (unlisted ids keep theirs, after)
 function providers(){
   const list=allProviders();
   const hid=cfg.hidden_providers||[], ord=cfg.provider_order||[];
@@ -409,50 +423,39 @@ function headlineOf(snap){
   return snap.windows[0];
 }
 function staleOf(snap){ if(snap.status==='stale') return true; return snap.fetched_at>0 && (Date.now()-snap.fetched_at)>5*60*1000; }
-
 function svgArc(r,frac,color,width,extra=''){
   const C=2*Math.PI*r;
   return `<circle cx="28" cy="28" r="${r}" fill="none" stroke="${color}" stroke-width="${width}"
-    stroke-dasharray="${(C*frac).toFixed(2)} ${C.toFixed(2)}" stroke-linecap="round"
-    transform="rotate(-90 28 28)" ${extra}/>`;
+    stroke-dasharray="${(C*frac).toFixed(2)} ${C.toFixed(2)}" stroke-linecap="round" transform="rotate(-90 28 28)" ${extra}/>`;
 }
-function ring28(u,color){
-  const C=2*Math.PI*10.5;
-  return `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10.5" fill="none" stroke="rgba(255,255,255,.12)" stroke-width="2.5"/>`
-    +(u==null?'':`<circle cx="12" cy="12" r="10.5" fill="none" stroke="${color}" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="${(C*Math.min(u,1)).toFixed(1)} ${C.toFixed(1)}" transform="rotate(-90 12 12)"/>`)+`</svg>`;
+function ringSvg(p){
+  const h=headlineOf(p.snap);
+  let inner=`<circle cx="28" cy="28" r="22" fill="var(--ink2)"/><circle cx="28" cy="28" r="25" fill="none" stroke="rgba(255,255,255,.1)" stroke-width="5"/>`;
+  if(h && h.count==null) inner+=svgArc(25,Math.min(h.used,1),tone(h.used),5);
+  const ws=workState(p.id);
+  if(ws==='running') inner+=`<g class="arc-spin">${svgArc(19,0.28,RUNGREEN,2.5)}</g>`;
+  else if(ws==='attention') inner+=`<g class="arc-pulse"><circle cx="28" cy="28" r="19" fill="none" stroke="${AMBER}" stroke-width="2.5"/></g>`;
+  return `<svg class="ring" viewBox="0 0 56 56">${inner}</svg>`;
+}
+function ring22(u,color){
+  const C=2*Math.PI*9.5;
+  return `<svg viewBox="0 0 22 22"><circle cx="11" cy="11" r="9.5" fill="none" stroke="rgba(255,255,255,.14)" stroke-width="2.5"/>`
+    +(u==null?'':`<circle cx="11" cy="11" r="9.5" fill="none" stroke="${color}" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="${(C*Math.min(u,1)).toFixed(1)} ${C.toFixed(1)}" transform="rotate(-90 11 11)"/>`)+`</svg>`;
 }
 
-/* ---------- DeepSeek pricing ----------
-   Peak: Mon–Fri 01:00–04:00 and 06:00–10:00 UTC; every other hour is off-peak at half price
-   (api-docs.deepseek.com/quick_start/pricing). */
+/* ---------- DeepSeek pricing ---------- (api-docs.deepseek.com/quick_start/pricing) */
 const DS_PEAK=[[60,240],[360,600]];
-function dsPeakAt(t){
-  const d=new Date(t), w=d.getUTCDay();
-  if(w<1||w>5) return false;
-  const m=d.getUTCHours()*60+d.getUTCMinutes();
-  return DS_PEAK.some(([a,b])=>m>=a&&m<b);
-}
+function dsPeakAt(t){ const d=new Date(t), w=d.getUTCDay(); if(w<1||w>5) return false; const m=d.getUTCHours()*60+d.getUTCMinutes(); return DS_PEAK.some(([a,b])=>m>=a&&m<b); }
 function dsPricing(t=Date.now()){
   const peak=dsPeakAt(t), d=new Date(t);
   const day0=Date.UTC(d.getUTCFullYear(),d.getUTCMonth(),d.getUTCDate());
-  for(let i=0;i<9;i++) for(const [a,b] of DS_PEAK) for(const m of [a,b]){
-    const c=day0+i*864e5+m*6e4;
-    if(c>t && dsPeakAt(c)!==peak) return {peak,next:c};
-  }
+  for(let i=0;i<9;i++) for(const [a,b] of DS_PEAK) for(const m of [a,b]){ const c=day0+i*864e5+m*6e4; if(c>t && dsPeakAt(c)!==peak) return {peak,next:c}; }
   return {peak,next:null};
 }
 function hm(ms){ return new Date(ms).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',hour12:false}); }
 function dsHoursLocal(){ const at=m=>hm(Date.UTC(2024,0,1,0,m)); return `${at(60)}–${at(240)} & ${at(360)}–${at(600)}`; }
-function whenCopy(ms){
-  if(!ms) return '';
-  const d=new Date(ms), same=d.toDateString()===new Date().toDateString();
-  return (same?'':d.toLocaleDateString('en-US',{weekday:'short'})+' ')+hm(ms)+' ('+soonCopy(ms)+')';
-}
-function shortMoney(s){
-  const m=/^([$¥])([\d.]+)/.exec(s||''); if(!m) return null;
-  const n=parseFloat(m[2]);
-  return m[1]+(n>=100?Math.round(n):n.toFixed(1));
-}
+function whenCopy(ms){ if(!ms) return ''; const d=new Date(ms), same=d.toDateString()===new Date().toDateString(); return (same?'':d.toLocaleDateString('en-US',{weekday:'short'})+' ')+hm(ms)+' ('+soonCopy(ms)+')'; }
+function shortMoney(s){ const m=/^([$¥])([\d.]+)/.exec(s||''); if(!m) return null; const n=parseFloat(m[2]); return m[1]+(n>=100?Math.round(n):n.toFixed(1)); }
 function renderDeepseek(snap){
   let h='';
   for(const w of snap.windows){
@@ -463,14 +466,13 @@ function renderDeepseek(snap){
   }
   const {peak,next}=dsPricing(), col=peak?'#FF8A3D':AMPLE;
   h+=`<div class="win"><div class="w-row"><span class="w-label"><span class="s-dot" style="display:inline-block;background:${col};margin-right:6px"></span>${peak?'Peak pricing':'Off-peak · 50% cheaper'}</span></div>
-    <div class="w-used">${peak?'Off-peak':'Peak'} starts ${esc(whenCopy(next))}</div>
-    <div class="w-used">Peak hours: ${dsHoursLocal()}, weekdays</div></div>`;
+    <div class="w-used">${peak?'Off-peak':'Peak'} starts ${esc(whenCopy(next))}</div><div class="w-used">Peak hours: ${dsHoursLocal()}, weekdays</div></div>`;
   if(snap.note && !shortMoney(snap.note)) h+=`<div class="c-note">${esc(snap.note)}</div>`;
   return h;
 }
 
 /* ---------- Live Activity + alerts ---------- */
-let peekShrinkT=null, toastQ=[], toastNow=null, toastT=null;
+let toastQ=[], toastNow=null, toastT=null;
 function liveInfo(){
   if(cfg.live_activity===false) return null;
   const ps=providers();
@@ -480,13 +482,11 @@ function liveInfo(){
   const h=headlineOf(p.snap), metered=h&&h.count==null;
   const title=att?`${p.name} needs you`:`${p.name} working`;
   const what=workDetail(p.id);
-  const sub=att ? (what||'Waiting for your reply')
-    : [what, run.length>1?`+${run.length-1} more`:''].filter(Boolean).join(' · ') || (metered&&h.resets_at?resetCopy(h.resets_at):'');
+  const sub=att ? (what||'Waiting for your reply') : [what, run.length>1?`+${run.length-1} more`:''].filter(Boolean).join(' · ') || (metered&&h.resets_at?resetCopy(h.resets_at):'');
   const ring=att
     ?`<svg class="lv-ring arc-pulse" viewBox="0 0 28 28"><circle cx="14" cy="14" r="12.5" fill="none" stroke="${AMBER}" stroke-width="2"/></svg>`
     :`<svg class="lv-ring arc-spin" viewBox="0 0 28 28"><circle cx="14" cy="14" r="12.5" fill="none" stroke="${RUNGREEN}" stroke-width="2" stroke-dasharray="20 79" stroke-linecap="round"/></svg>`;
-  return `<span class="lv-ic">${ring}${glyphHtml(p,true)||esc(p.glyph)}</span>`
-    +`<div class="lv-txt"><div class="lv-t">${esc(title)}</div>${sub?`<div class="lv-s">${esc(sub)}</div>`:''}</div>`
+  return `<span class="lv-ic">${ring}${glyphHtml(p,true)||esc(p.glyph)}</span><div class="lv-txt"><div class="lv-t">${esc(title)}</div>${sub?`<div class="lv-s">${esc(sub)}</div>`:''}</div>`
     +(metered?`<span class="lv-v" style="color:${tone(h.used)}">${Math.round(h.used*100)}%</span>`:'');
 }
 function workDetail(id){
@@ -502,27 +502,19 @@ function workDetail(id){
 function updatePeek(){
   const html = toastNow ? toastNow : liveInfo();
   const want = toastNow ? 2 : (html ? 1 : 0);
-  clearTimeout(peekShrinkT);
-  if(want){
-    if(live.dataset.html!==html){ live.innerHTML=html; live.dataset.html=html; }
-    if(want!==peekWin){ peekWin=want; invoke('notch_peek',{kind:want}).catch(()=>{}); }
-    root.dataset.peek=String(want);
-  }else if(peekWin){
-    root.dataset.peek='0'; // the shape springs back into the pill; the window follows
-    peekShrinkT=setTimeout(()=>{ peekWin=0; invoke('notch_peek',{kind:0}).catch(()=>{}); },CLOSE_MS);
-  }
+  if(want && L.live.dataset.html!==html){ L.live.innerHTML=html; L.live.dataset.html=html; }
+  if(want!==peek){ peek=want; invoke('notch_peek',{kind:want}).catch(()=>{}); if(state==='idle') applyShape(); }
 }
 function toast(icon,color,title,sub){
   if(toastQ.length>=4) toastQ.shift();
-  toastQ.push(`<span class="lv-ic" style="background:${color}26;color:${color};font-size:16px">${icon}</span>`
-    +`<div class="lv-txt"><div class="lv-t">${esc(title)}</div>${sub?`<div class="lv-s">${esc(sub)}</div>`:''}</div>`);
+  toastQ.push(`<span class="lv-ic" style="background:${color}26;color:${color};font-size:16px">${icon}</span><div class="lv-txt"><div class="lv-t">${esc(title)}</div>${sub?`<div class="lv-s">${esc(sub)}</div>`:''}</div>`);
   pumpToasts();
 }
 function pumpToasts(){
-  if(toastNow||state==='open'||dragging||!toastQ.length) return;
+  if(toastNow||state!=='idle'||dragging||!toastQ.length) return;
   toastNow=toastQ.shift(); updatePeek();
   clearTimeout(toastT);
-  toastT=setTimeout(()=>{ toastNow=null; updatePeek(); setTimeout(pumpToasts,CLOSE_MS+80); },5000);
+  toastT=setTimeout(()=>{ toastNow=null; updatePeek(); setTimeout(pumpToasts,450); },5000);
 }
 const alertMemo={}, workPrev={};
 let alertsArmed=false; setTimeout(()=>{alertsArmed=true;},10000);
@@ -530,8 +522,7 @@ function checkEvents(){
   const levels=(cfg.alert_levels||[]).slice().sort((a,b)=>a-b);
   for(const p of providers()){
     const s=p.snap, ws=workState(p.id);
-    if(alertsArmed && ws==='attention' && workPrev[p.id] && workPrev[p.id]!=='attention')
-      toast('!',AMBER,`${p.name} needs you`,'Waiting for your reply');
+    if(alertsArmed && ws==='attention' && workPrev[p.id] && workPrev[p.id]!=='attention') toast('!',AMBER,`${p.name} needs you`,'Waiting for your reply');
     workPrev[p.id]=ws;
     if(s.status!=='ok' || !levels.length) continue;
     const rows=[], grouped=s.groups&&s.groups.length;
@@ -551,11 +542,10 @@ function checkEvents(){
 let dsPrevPeak=null;
 setInterval(()=>{
   updatePeek(); renderClosed();
-  if(state==='open' && curTab!=='settings') renderPage(curTab);
+  if(state==='panel' && curTab!=='settings') renderPage(curTab);
   if(dsSnap.status==='absent') return;
   const {peak,next}=dsPricing();
-  if(dsPrevPeak!==null && peak!==dsPrevPeak)
-    toast(peak?'⏱':'☾', peak?'#FF8A3D':AMPLE, peak?'DeepSeek peak pricing started':'DeepSeek off-peak · 50% cheaper', (peak?'Off-peak again ':'Until ')+whenCopy(next));
+  if(dsPrevPeak!==null && peak!==dsPrevPeak) toast(peak?'⏱':'☾', peak?'#FF8A3D':AMPLE, peak?'DeepSeek peak pricing started':'DeepSeek off-peak · 50% cheaper', (peak?'Off-peak again ':'Until ')+whenCopy(next));
   dsPrevPeak=peak;
 },30000);
 
@@ -582,8 +572,7 @@ function recordHistory(){
 function sinceReset(a){ let i=a.length-1; while(i>0 && a[i-1][1]<=a[i][1]+0.15) i--; return a.slice(i); }
 function forecast(key,w){
   if(!w.resets_at) return null;
-  const now=Date.now();
-  const seg=sinceReset(hist[key]||[]).filter(p=>now-p[0]<6*36e5);
+  const now=Date.now(), seg=sinceReset(hist[key]||[]).filter(p=>now-p[0]<6*36e5);
   if(seg.length<3) return null;
   const first=seg[0], last=seg[seg.length-1], dt=last[0]-first[0];
   if(dt<60*6e4) return null;
@@ -598,21 +587,15 @@ function spark(key){
   if(a.length<2 || a[a.length-1][0]-a[0][0]<36e5) return '';
   const W=300, H=24, t0=now-864e5;
   const pts=a.map(([t,u])=>`${((t-t0)/864e5*W).toFixed(1)},${(H-1-Math.min(u,1)*(H-2)).toFixed(1)}`).join(' ');
-  return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-opacity=".7" stroke-width="1.5" vector-effect="non-scaling-stroke"/></svg>`
-    +`<div class="spark-l"><span>24h ago</span><span>now</span></div>`;
+  return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-opacity=".7" stroke-width="1.5" vector-effect="non-scaling-stroke"/></svg><div class="spark-l"><span>24h ago</span><span>now</span></div>`;
 }
 const tipsSeen=new Set();
 function checkTips(){
   for(const p of providers()){
     if(!(p.snap.groups&&p.snap.groups.length)||p.snap.status!=='ok') continue;
-    for(const t of accountTips(p.snap.groups)){
-      if(tipsSeen.has(t.key)) continue;
-      tipsSeen.add(t.key);
-      if(alertsArmed) toast('↪',AMPLE,t.title,t.sub);
-    }
+    for(const t of accountTips(p.snap.groups)){ if(tipsSeen.has(t.key)) continue; tipsSeen.add(t.key); if(alertsArmed) toast('↪',AMPLE,t.title,t.sub); }
   }
 }
-
 function resetCopy(ms){
   if(!ms) return '';
   const diff=ms-Date.now();
@@ -635,21 +618,14 @@ function soonCopy(ms){
 }
 function accountTips(groups){
   const by={};
-  for(const g of groups){
-    if(!g.rows.length) continue;
-    const left=Math.min(...g.rows.map(r=>1-r.used));
-    (by[g.provider||g.title]=by[g.provider||g.title]||[]).push({g,left});
-  }
+  for(const g of groups){ if(!g.rows.length) continue; const left=Math.min(...g.rows.map(r=>1-r.used)); (by[g.provider||g.title]=by[g.provider||g.title]||[]).push({g,left}); }
   const tips=[];
   for(const list of Object.values(by)){
     if(list.length<2) continue;
     list.sort((a,b)=>a.left-b.left);
     const lo=list[0], hi=list[list.length-1];
-    if(lo.left<0.2 && hi.left>=0.5) tips.push({
-      key:lo.g.title+'|'+lo.g.account+'|'+hi.g.account,
-      title:`${lo.g.title}: switch to ${hi.g.account}`,
-      sub:`${lo.g.account} has ${Math.round(lo.left*100)}% left · ${hi.g.account} has ${Math.round(hi.left*100)}%`,
-    });
+    if(lo.left<0.2 && hi.left>=0.5) tips.push({key:lo.g.title+'|'+lo.g.account+'|'+hi.g.account, title:`${lo.g.title}: switch to ${hi.g.account}`,
+      sub:`${lo.g.account} has ${Math.round(lo.left*100)}% left · ${hi.g.account} has ${Math.round(hi.left*100)}%`});
   }
   return tips;
 }
@@ -657,14 +633,11 @@ function renderGroups(groups){
   let h='<div class="q-groups">';
   for(const t of accountTips(groups)) h+=`<div class="q-tip">↪ <b>${esc(t.title)}</b><br>${esc(t.sub)}</div>`;
   for(const g of groups){
-    const gid=QUOTA_GLYPH[g.provider];
-    const icon=gid?glyphHtml({id:gid,name:g.title,glyph:''},true):'';
-    h+=`<div class="q-group"><div class="q-head">${icon}<span class="q-title">${esc(g.title)}</span>`
-      +`${g.plan?`<span class="q-plan">${esc(g.plan)}</span>`:''}<span class="q-acct">${esc(g.account)}</span></div>`;
+    const gid=QUOTA_GLYPH[g.provider], icon=gid?glyphHtml({id:gid,name:g.title,glyph:''},true):'';
+    h+=`<div class="q-group"><div class="q-head">${icon}<span class="q-title">${esc(g.title)}</span>${g.plan?`<span class="q-plan">${esc(g.plan)}</span>`:''}<span class="q-acct">${esc(g.account)}</span></div>`;
     for(const r of g.rows){
       const left=Math.max(0,Math.min(100,Math.round((1-r.used)*100)));
-      h+=`<div class="q-row" title="${esc(r.amount||'')}"><span class="q-name">${esc(r.label)}</span>`
-        +`<span class="q-pct">${left}%</span><span class="q-reset">${soonCopy(r.resets_at)}</span>`
+      h+=`<div class="q-row" title="${esc(r.amount||'')}"><span class="q-name">${esc(r.label)}</span><span class="q-pct">${left}%</span><span class="q-reset">${soonCopy(r.resets_at)}</span>`
         +`<span class="q-bar"><i style="width:${left}%;background:${tone(r.used)}"></i></span></div>`;
     }
     if(g.message) h+=`<div class="q-msg">${esc(g.message)}</div>`;
@@ -681,71 +654,25 @@ function worstAndNext(){
     if(p.snap.status==='needsAuth') continue;
     const h=headlineOf(p.snap);
     if(h&&h.count==null&&(!worst||h.used>worst.h.used)) worst={p,h};
-    for(const w of p.snap.windows)
-      if(w.count==null&&w.resets_at&&w.resets_at>now&&(!next||w.resets_at<next.w.resets_at)) next={p,w};
+    for(const w of p.snap.windows) if(w.count==null&&w.resets_at&&w.resets_at>now&&(!next||w.resets_at<next.w.resets_at)) next={p,w};
   }
   return {worst,next};
 }
-function renderClosed(){
+function closedHtml(vertical){
   const {worst,next}=worstAndNext();
   const working=providers().some(p=>workState(p.id)==='running');
-  let html;
-  if(!worst) html=`<span class="c-dot"></span>`;
-  else{
-    const u=Math.min(worst.h.used,1), col=tone(u);
-    const side=cfg.drag_enabled?false:(dockEdge()!=='top');
-    html=`<span class="c-ring">${ring28(u,col)}${glyphHtml(worst.p,true)||esc(worst.p.glyph)}</span>`
-      +`<span class="c-pct" style="color:${col}">${Math.round(u*100)}%</span>`
-      +(side?'':'<span class="c-gap"></span>')
-      +(working?'<span class="c-work" title="Working"></span>':'')
-      +(next?`<span class="c-reset">↻ ${esc(soonCopy(next.w.resets_at).replace(/^in /,''))}</span>`:'');
-  }
-  if(closedEl.dataset.html!==html){ closedEl.innerHTML=html; closedEl.dataset.html=html; }
-  if(dragging) $('dragpill').innerHTML=html.replace('c-gap','c-gap-x');
+  if(!worst) return `<span class="c-dot"></span>`;
+  const u=Math.min(worst.h.used,1), col=tone(u);
+  return `<span class="c-ring">${ring22(u,col)}${glyphHtml(worst.p,true)||esc(worst.p.glyph)}</span><span class="c-pct" style="color:${col}">${Math.round(u*100)}%</span>`
+    +(vertical?'':'<span class="c-gap"></span>')+(working?'<span class="c-work" title="Working"></span>':'')
+    +(next?`<span class="c-reset">↻ ${esc(soonCopy(next.w.resets_at).replace(/^in /,''))}</span>`:'');
+}
+function renderClosed(){
+  const html=closedHtml(side());
+  if(L.closed.dataset.html!==html){ L.closed.innerHTML=html; L.closed.dataset.html=html; }
 }
 
-/* ---------- Panel: tabs and pages ---------- */
-const TABS=['usage','detail','r9','settings'];
-let curTab='usage', detailId=null;
-function visibleTabs(){ return TABS.filter(t=>t!=='r9'||r9Snap.status!=='absent'); }
-function setTab(t,animate=true){
-  if(!visibleTabs().includes(t)) t='usage';
-  curTab=t;
-  const vis=visibleTabs();
-  for(const b of $('tabs').querySelectorAll('button')){
-    b.hidden=!vis.includes(b.dataset.tab);
-    b.classList.toggle('on',b.dataset.tab===t);
-  }
-  const on=$('tabs').querySelector(`button[data-tab="${t}"]`);
-  const ink=$('tabInk');
-  if(on){ ink.style.width=on.offsetWidth+'px'; ink.style.transform=`translateX(${on.offsetLeft}px)`; }
-  // every page stays in the track; hidden tabs just never get scrolled to
-  const idx=TABS.indexOf(t);
-  pagesEl.style.transform=`translateX(${-idx*100}%)`;
-  renderPage(t,animate);
-}
-function renderPanel(animate){ setTab(curTab,animate); }
-function renderPage(t,animate){
-  const el=pagesEl.querySelector(`.page[data-page="${t}"]`); if(!el) return;
-  const top=el.scrollTop;
-  if(t==='usage') el.innerHTML=usageHtml();
-  else if(t==='detail') el.innerHTML=detailHtml();
-  else if(t==='r9') el.innerHTML=r9Html();
-  else if(t==='settings') el.innerHTML=settingsHtml();
-  el.scrollTop=top;
-  if(animate){ el.classList.remove('enter'); void el.offsetWidth; el.classList.add('enter'); }
-}
-
-function tileRing(p){
-  const h=headlineOf(p.snap);
-  let inner=`<circle cx="28" cy="28" r="22" fill="var(--ink3)"/><circle cx="28" cy="28" r="25" fill="none" stroke="rgba(255,255,255,.09)" stroke-width="5"/>`;
-  if(h && h.count==null) inner+=svgArc(25,Math.min(h.used,1),tone(h.used),5);
-  const ws=workState(p.id);
-  if(ws==='running') inner+=`<g class="arc-spin">${svgArc(19,0.28,RUNGREEN,2.5)}</g>`;
-  else if(ws==='attention') inner+=`<g class="arc-pulse"><circle cx="28" cy="28" r="19" fill="none" stroke="${AMBER}" stroke-width="2.5"/></g>`;
-  return `<div class="ringwrap ${staleOf(p.snap)?'dim':''}"><svg class="ring" viewBox="0 0 56 56">${inner}</svg>`
-    +`<div class="glyph ${(!glyphs[p.id]&&p.glyph.length>1)?'small':''}">${glyphHtml(p)}</div></div>`;
-}
+/* ---------- Open: the slim strip, and the detail card beside it ---------- */
 function valueOf(p){
   const h=headlineOf(p.snap);
   if(p.snap.status==='needsAuth'||p.snap.status==='none') return '—';
@@ -754,50 +681,74 @@ function valueOf(p){
   if(h) return (h.derived?'~':'')+Math.round(h.used*100)+'%';
   return '…';
 }
-function subOf(p){
-  const ws=workState(p.id);
-  if(ws==='attention') return 'Needs you';
-  if(ws==='running') return workDetail(p.id)||'Working';
-  if(p.snap.status==='needsAuth') return 'Not connected';
-  const h=headlineOf(p.snap);
-  return h&&h.resets_at ? '↻ '+soonCopy(h.resets_at).replace(/^in /,'') : (h?h.label:''); // escaped by the caller
-}
-function usageHtml(){
-  const ps=providers(), {worst,next}=worstAndNext();
-  let s='<div class="sum">';
-  if(worst) s+=`<span>Tightest <b style="color:${tone(worst.h.used)}">${esc(worst.p.name)} ${Math.round(worst.h.used*100)}%</b></span>`;
-  if(next) s+=`<span>Next reset <b>${esc(next.p.name)} ${esc(soonCopy(next.w.resets_at))}</b></span>`;
-  s+='</div><div class="tiles">';
-  for(const p of ps){
-    const h=headlineOf(p.snap), col=h&&h.count==null?tone(h.used):'var(--text)';
-    s+=`<div class="tile" data-go="${p.id}">${tileRing(p)}<div class="t-name">${esc(p.name)}</div>`
-      +`<div class="t-val" style="color:${p.snap.status==='needsAuth'?'var(--mute)':col}">${esc(valueOf(p))}</div><div class="t-sub">${esc(subOf(p))}</div></div>`;
-  }
-  return s+'</div>';
-}
-function detailHtml(){
+function renderStrip(){
   const ps=providers();
-  const p=ps.find(x=>x.id===detailId)||ps[0];
-  detailId=p.id;
-  let chips='<div class="chips">';
-  for(const q of ps){
-    const h=headlineOf(q.snap);
-    const icon=glyphHtml(q,true)||`<span class="cdot" style="background:${h&&h.count==null?tone(h.used):'var(--mute)'}"></span>`;
-    chips+=`<div class="chip ${q.id===p.id?'on':''}" data-detail="${q.id}">${icon}${esc(q.name)}</div>`;
+  const key=edge+'|'+ps.map(p=>p.id+':'+(glyphs[p.id]?glyphs[p.id].kind:'-')).join(',');
+  if(L.strip.dataset.key!==key){
+    L.strip.innerHTML=ps.map((p,i)=>`<div class="cell" data-p="${p.id}" style="--i:${i}"><div class="ringwrap"></div><div class="pct"></div></div>`).join('')
+      +`<button class="more" data-act="more" style="--i:${ps.length}" title="More">⋯</button>`;
+    L.strip.dataset.key=key;
   }
-  chips+='</div>';
-  return chips+`<div class="d-card">${cardHtml(p)}</div>`;
+  for(const p of ps){
+    const cell=L.strip.querySelector(`.cell[data-p="${p.id}"]`); if(!cell) continue;
+    const h=headlineOf(p.snap);
+    cell.querySelector('.ringwrap').innerHTML=ringSvg(p)+`<div class="glyph ${(!glyphs[p.id]&&p.glyph.length>1)?'small':''}">${glyphHtml(p)}</div>`;
+    cell.querySelector('.ringwrap').classList.toggle('dim',staleOf(p.snap));
+    const pct=cell.querySelector('.pct');
+    pct.textContent=valueOf(p);
+    pct.style.color = h&&h.count==null&&p.snap.status!=='needsAuth' ? tone(h.used) : 'var(--mute)';
+  }
 }
+let cardId=null, cardT=null;
+function showCard(id){
+  clearTimeout(cardT);
+  const p=providers().find(x=>x.id===id); if(!p) return;
+  cardId=id;
+  cardEl.innerHTML=cardHtml(p);
+  for(const c of L.strip.querySelectorAll('.cell')) c.classList.toggle('hot',c.dataset.p===id);
+  placeCard();
+  cardEl.classList.add('show');
+  burstRects();
+}
+function hideCard(now){
+  clearTimeout(cardT);
+  const go=()=>{ cardEl.classList.remove('show'); cardId=null; for(const c of L.strip.querySelectorAll('.cell')) c.classList.remove('hot'); burstRects(); };
+  if(now) go(); else cardT=setTimeout(go,220);
+}
+/* The card opens on the free side of the strip, level with the hovered ring, and stays inside the window */
+function placeCard(){
+  const cell=L.strip.querySelector(`.cell[data-p="${cardId}"]`); if(!cell) return;
+  // Measured rects include the size-setting zoom; left/top are set in unzoomed CSS px, so divide it out
+  const z=zoomVal, un=r=>({left:r.left/z,top:r.top/z,right:r.right/z,bottom:r.bottom/z,width:(r.right-r.left)/z,height:(r.bottom-r.top)/z});
+  const cr=un(cell.getBoundingClientRect()), ir=un(targetRect()), W=innerWidth/z, H=innerHeight/z;
+  const cw=262; cardEl.style.maxHeight='';
+  let left, top;
+  if(side()){
+    left = edge==='right' ? ir.left-cw-10 : ir.right+10;
+    const ch=Math.min(cardEl.scrollHeight, H-16);
+    top=Math.round(cr.top+cr.height/2-ch/2); top=Math.max(8,Math.min(top,H-ch-8));
+  }else{
+    left=Math.round(cr.left+cr.width/2-cw/2); left=Math.max(8,Math.min(left,W-cw-8));
+    const room = edge==='bottom' ? ir.top-18 : H-ir.bottom-18;
+    cardEl.style.maxHeight=Math.max(120,room)+'px';
+    const ch=Math.min(cardEl.scrollHeight, room);
+    top = edge==='bottom' ? ir.top-10-ch : ir.bottom+10;
+  }
+  cardEl.style.left=Math.round(left)+'px'; cardEl.style.top=Math.round(top)+'px';
+}
+L.strip.addEventListener('mouseover',e=>{ const c=e.target.closest('.cell'); if(c&&c.dataset.p!==cardId) showCard(c.dataset.p); else if(c) clearTimeout(cardT); });
+L.strip.addEventListener('mouseleave',()=>hideCard(false));
+cardEl.addEventListener('mouseenter',()=>clearTimeout(cardT));
+cardEl.addEventListener('mouseleave',()=>hideCard(false));
+
 function cardHtml(p){
-  const snap=p.snap;
-  const grouped=!!(snap.groups&&snap.groups.length);
+  const snap=p.snap, grouped=!!(snap.groups&&snap.groups.length);
   let html=`<div class="c-head">${glyphHtml(p,true)}<span class="c-title">${p.name}</span></div>`;
   if(staleOf(snap)&&snap.fetched_at) html+=`<div class="c-sub">Updated ${ago(snap.fetched_at)}</div>`;
   if(snap.status==='needsAuth'){
     const who={claude:'Sign in to Claude Code to see usage.',cursor:'Sign in to Cursor to see usage.',codex:'Sign in to Codex to see usage.',gemini:'Sign in to Antigravity to see usage.',commandcode:'Add a Command Code API key to see usage.',router9:'Connect 9Router to see usage.',deepseek:'Add a DeepSeek API key to see your balance.'}[p.id]||'';
     html+=`<div class="c-note">${who}<br>${esc(snap.note||'')}</div>`;
-    if(p.id==='commandcode'||p.id==='router9'||p.id==='deepseek')
-      html+=`<div class="foot" style="margin-top:10px"><button class="btn acc" data-act="keys">Add API key…</button></div>`;
+    if(p.id==='commandcode'||p.id==='router9'||p.id==='deepseek') html+=`<div class="foot" style="margin-top:10px"><button class="btn acc" data-act="keys">Add API key…</button></div>`;
   }else if(p.id==='deepseek'){
     html+=renderDeepseek(snap);
   }else if(grouped){
@@ -808,19 +759,12 @@ function cardHtml(p){
     html+=`<div class="c-note">${esc(snap.note||'Waiting for first reading…')}</div>`;
   }else{
     for(const w of snap.windows){
-      if(w.count!=null){
-        html+=`<div class="win"><div class="w-row"><span class="w-label">${esc(w.label)}</span></div>
-          <div class="w-used">${w.count>0?`~${w.count} request${w.count===1?'':'s'} today`:'no requests today'}</div></div>`;
-        continue;
-      }
+      if(w.count!=null){ html+=`<div class="win"><div class="w-row"><span class="w-label">${esc(w.label)}</span></div><div class="w-used">${w.count>0?`~${w.count} request${w.count===1?'':'s'} today`:'no requests today'}</div></div>`; continue; }
       const hk=p.id+':'+(w.id||w.label), fc=forecast(hk,w);
-      html+=`<div class="win">
-        <div class="w-row"><span class="w-label">${esc(w.label)}</span><span class="w-reset">${resetCopy(w.resets_at)}</span></div>
+      html+=`<div class="win"><div class="w-row"><span class="w-label">${esc(w.label)}</span><span class="w-reset">${resetCopy(w.resets_at)}</span></div>
         <div class="w-track"><div class="w-fill" style="width:${(Math.min(w.used,1)*100).toFixed(0)}%;background:${tone(w.used)}"></div></div>
-        <div class="w-used">${w.derived?'~':''}${Math.round(w.used*100)}% used</div>
-        ${spark(hk)}
-        ${fc?`<div class="w-fc" style="color:${fc.ok?'var(--mute)':WATCH}">${esc(fc.text)}</div>`:''}
-      </div>`;
+        <div class="w-used">${w.derived?'~':''}${Math.round(w.used*100)}% used</div>${spark(hk)}
+        ${fc?`<div class="w-fc" style="color:${fc.ok?'var(--mute)':WATCH}">${esc(fc.text)}</div>`:''}</div>`;
     }
     if(snap.note) html+=`<div class="c-note">${esc(snap.note)}</div>`;
   }
@@ -828,32 +772,78 @@ function cardHtml(p){
     const act=(stateSnap.sessions||[]).filter(s=>s.state!=='idle');
     if(act.length){
       html+=`<div class="c-sessions">`;
-      for(const s of act.slice(0,6))
-        html+=`<div class="s-row s-jump" data-sid="${esc(s.id)}" title="Jump to this session"><span class="s-dot" style="background:${STATE_DOT[s.state]||'#666'}"></span><span class="s-title">${esc(s.title)}</span><span class="s-go">↗</span></div>`;
+      for(const s of act.slice(0,6)) html+=`<div class="s-row s-jump" data-sid="${esc(s.id)}" title="Jump to this session"><span class="s-dot" style="background:${STATE_DOT[s.state]||'#666'}"></span><span class="s-title">${esc(s.title)}</span><span class="s-go">↗</span></div>`;
       html+=`</div>`;
     }
   }else{
     const acts=activity.filter(a=>a.provider===p.id);
     if(acts.length){
       html+=`<div class="c-sessions">`;
-      for(const a of acts.slice(0,5)){
-        const col=a.state==='waiting'?AMBER:RUNGREEN;
-        html+=`<div class="s-row"><span class="s-dot" style="background:${col}"></span>${esc(a.name)}<span style="margin-left:auto">${esc(a.detail)}</span></div>`;
-      }
+      for(const a of acts.slice(0,5)) html+=`<div class="s-row"><span class="s-dot" style="background:${a.state==='waiting'?AMBER:RUNGREEN}"></span>${esc(a.name)}<span style="margin-left:auto">${esc(a.detail)}</span></div>`;
       html+=`</div>`;
     }
   }
   return html;
 }
 
-/* 9Router: its accounts, and each connection's on/off switch (the dashboard's own switch) */
+/* ---------- Panel: tabs and pages ---------- */
+const TABS=['usage','detail','r9','settings'];
+let curTab='usage', detailId=null;
+function visibleTabs(){ return TABS.filter(t=>t!=='r9'||r9Snap.status!=='absent'); }
+function setTab(t,animate=true){
+  if(!visibleTabs().includes(t)) t='usage';
+  curTab=t;
+  const vis=visibleTabs();
+  for(const b of $('tabs').querySelectorAll('button')){ b.hidden=!vis.includes(b.dataset.tab); b.classList.toggle('on',b.dataset.tab===t); }
+  const on=$('tabs').querySelector(`button[data-tab="${t}"]`), ink=$('tabInk');
+  if(on){ ink.style.width=on.offsetWidth+'px'; ink.style.transform=`translateX(${on.offsetLeft}px)`; }
+  pagesEl.style.transform=`translateX(${-TABS.indexOf(t)*100}%)`;
+  renderPage(t,animate);
+}
+function renderPage(t,animate){
+  const el=pagesEl.querySelector(`.page[data-page="${t}"]`); if(!el) return;
+  const top=el.scrollTop;
+  el.innerHTML = t==='usage'?usageHtml() : t==='detail'?detailHtml() : t==='r9'?r9Html() : settingsHtml();
+  el.scrollTop=top;
+  if(animate){ el.classList.remove('enter'); void el.offsetWidth; el.classList.add('enter'); }
+}
+function subOf(p){
+  const ws=workState(p.id);
+  if(ws==='attention') return 'Needs you';
+  if(ws==='running') return workDetail(p.id)||'Working';
+  if(p.snap.status==='needsAuth') return 'Not connected';
+  const h=headlineOf(p.snap);
+  return h&&h.resets_at ? '↻ '+soonCopy(h.resets_at).replace(/^in /,'') : (h?h.label:'');
+}
+function usageHtml(){
+  const ps=providers(), {worst,next}=worstAndNext();
+  let s='<div class="sum">';
+  if(worst) s+=`<span>Tightest <b style="color:${tone(worst.h.used)}">${esc(worst.p.name)} ${Math.round(worst.h.used*100)}%</b></span>`;
+  if(next) s+=`<span>Next reset <b>${esc(next.p.name)} ${esc(soonCopy(next.w.resets_at))}</b></span>`;
+  s+='</div><div class="tiles">';
+  for(const p of ps){
+    const h=headlineOf(p.snap), col=h&&h.count==null&&p.snap.status!=='needsAuth'?tone(h.used):'var(--mute)';
+    s+=`<div class="tile" data-go="${p.id}"><div class="ringwrap ${staleOf(p.snap)?'dim':''}">${ringSvg(p)}<div class="glyph ${(!glyphs[p.id]&&p.glyph.length>1)?'small':''}">${glyphHtml(p)}</div></div>`
+      +`<div class="t-name">${esc(p.name)}</div><div class="t-val" style="color:${col}">${esc(valueOf(p))}</div><div class="t-sub">${esc(subOf(p))}</div></div>`;
+  }
+  return s+'</div>';
+}
+function detailHtml(){
+  const ps=providers(), p=ps.find(x=>x.id===detailId)||ps[0];
+  detailId=p.id;
+  let chips='<div class="chips">';
+  for(const q of ps){
+    const h=headlineOf(q.snap);
+    const icon=glyphHtml(q,true)||`<span class="cdot" style="background:${h&&h.count==null?tone(h.used):'var(--mute)'}"></span>`;
+    chips+=`<div class="chip ${q.id===p.id?'on':''}" data-detail="${q.id}">${icon}${esc(q.name)}</div>`;
+  }
+  return chips+`</div><div class="d-card">${cardHtml(p)}</div>`;
+}
 let conns=null, connsErr='', connsBusy=false;
 function loadConns(){
-  if(connsBusy) return;
-  connsBusy=true;
-  invoke('router9_connections').then(list=>{ conns=list||[]; connsErr=''; })
-    .catch(e=>{ connsErr=String(e); })
-    .finally(()=>{ connsBusy=false; if(state==='open'&&curTab==='r9') renderPage('r9'); });
+  if(connsBusy) return; connsBusy=true;
+  invoke('router9_connections').then(list=>{ conns=list||[]; connsErr=''; }).catch(e=>{ connsErr=String(e); })
+    .finally(()=>{ connsBusy=false; if(state==='panel'&&curTab==='r9') renderPage('r9'); });
 }
 function r9Html(){
   let h='';
@@ -870,48 +860,40 @@ function r9Html(){
     }
   }
   if(connsErr&&conns) h+=`<div class="q-msg">${esc(connsErr)}</div>`;
-  h+=`<div class="foot" style="margin-top:8px"><button class="btn" data-act="conns-reload">Reload</button></div></div>`;
-  return h;
+  return h+`<div class="foot" style="margin-top:8px"><button class="btn" data-act="conns-reload">Reload</button></div></div>`;
 }
-
-/* Settings, inside the island: all clicks, nothing to type */
 function settingsHtml(){
-  const e=cfg.drag_enabled?'free':dockEdge();
+  const pos=cfg.drag_enabled?'free':(['top','bottom','left','right'].includes(cfg.edge)?cfg.edge:'right');
   const seg=(key,opts,cur)=>`<div class="seg">${opts.map(([v,l])=>`<button class="${String(v)===String(cur)?'on':''}" data-set="${key}" data-val='${JSON.stringify(v)}'>${l}</button>`).join('')}</div>`;
-  const lv=(cfg.alert_levels||[]).join(',');
-  const theme=cfg.theme==='dark'?'midnight':cfg.theme;
-  let h=`<div class="sec"><h4>Position</h4>${seg('pos',[['top','Top'],['left','Left'],['right','Right'],['free','Float']],e)}</div>`;
-  h+=`<div class="sec"><h4>Theme</h4><div class="swatches">${THEMES.map(([id,name,ink,acc])=>
-    `<div class="swatch ${theme===id?'on':''}" data-theme-pick="${id}" title="${name}" style="background:${ink}"><i style="background:${acc}"></i></div>`).join('')}</div></div>`;
+  const theme=(!cfg.theme||cfg.theme==='dark')?'midnight':cfg.theme;
+  let h=`<div class="sec"><h4>Position</h4>${seg('pos',[['top','Top'],['bottom','Bottom'],['left','Left'],['right','Right'],['free','Float']],pos)}</div>`;
+  h+=`<div class="sec"><h4>Theme</h4><div class="swatches">${THEMES.map(([id,name,ink,acc])=>`<div class="swatch ${theme===id?'on':''}" data-theme-pick="${id}" title="${name}" style="background:${ink}"><i style="background:${acc}"></i></div>`).join('')}</div></div>`;
   h+=`<div class="sec"><h4>Behaviour</h4>`
     +`<div class="row"><div class="rl">Live Activity<div class="rs">Show what is working while closed</div></div><button class="sw ${cfg.live_activity!==false?'on':''}" data-toggle="live_activity"></button></div>`
     +`<div class="row"><div class="rl">Hide in full screen<div class="rs">Games, videos, presentations</div></div><button class="sw ${cfg.hide_fullscreen!==false?'on':''}" data-toggle="hide_fullscreen"></button></div>`
-    +`<div class="row"><div class="rl">Quota alerts</div></div>${seg('alerts',[['','Off'],['80,95','80 · 95%'],['50,80,95','50 · 80 · 95%']],lv)}</div>`;
+    +`<div class="row"><div class="rl">Quota alerts</div></div>${seg('alerts',[['','Off'],['80,95','80 · 95%'],['50,80,95','50 · 80 · 95%']],(cfg.alert_levels||[]).join(','))}</div>`;
   h+=`<div class="sec"><h4>Size & opacity</h4>${seg('scale',[[0.8,'S'],[1,'M'],[1.25,'L'],[1.5,'XL']],cfg.scale)}<div style="height:6px"></div>${seg('opacity',[[1,'100%'],[0.85,'85%'],[0.7,'70%'],[0.55,'55%']],cfg.opacity)}</div>`;
-  const all=allProviders(), hid=cfg.hidden_providers||[];
-  h+=`<div class="sec"><h4>Providers on the island</h4><div class="pchips">${all.map(p=>
-    `<div class="chip ${hid.includes(p.id)?'':'on'}" data-hide="${p.id}">${glyphHtml(p,true)}${esc(p.name)}</div>`).join('')}</div></div>`;
-  h+=`<div class="foot"><button class="btn" data-act="keys">API keys & order…</button><button class="btn" data-act="refresh">Refresh now</button><span class="by">Created by penyu101</span></div>`;
-  return h;
+  const hid=cfg.hidden_providers||[];
+  h+=`<div class="sec"><h4>Providers on the island</h4><div class="pchips">${allProviders().map(p=>`<div class="chip ${hid.includes(p.id)?'':'on'}" data-hide="${p.id}">${glyphHtml(p,true)}${esc(p.name)}</div>`).join('')}</div></div>`;
+  return h+`<div class="foot"><button class="btn" data-act="keys">API keys & order…</button><button class="btn" data-act="refresh">Refresh now</button><span class="by">Created by penyu101</span></div>`;
 }
-function setPref(key,value){
-  return invoke('set_pref',{key,value}).catch(e=>notice(String(e)));
-}
-panel.addEventListener('click',e=>{
-  const t=e.target.closest('[data-tab],[data-go],[data-detail],[data-act],[data-set],[data-toggle],[data-theme-pick],[data-hide],[data-conn],[data-sid]');
-  if(!t) return;
+function setPref(key,value){ return invoke('set_pref',{key,value}).catch(e=>notice(String(e))); }
+
+/* one click handler for the strip, the card and the panel */
+function onClick(e){
+  const t=e.target.closest('[data-tab],[data-go],[data-detail],[data-act],[data-set],[data-toggle],[data-theme-pick],[data-hide],[data-conn],[data-sid],.cell');
+  if(!t||moved) return;
   const d=t.dataset;
+  if(t.classList.contains('cell')){ detailId=d.p; openPanel('detail'); return; }
   if(d.tab){ setTab(d.tab); return; }
   if(d.go){ detailId=d.go; setTab('detail'); return; }
   if(d.detail){ detailId=d.detail; renderPage('detail'); return; }
-  if(d.sid){
-    closeNotch();
-    invoke('focus_session',{id:d.sid}).then(ok=>{ if(ok===false) toast('!',AMBER,'Couldn’t bring that session to the front','Its window may be closed or hidden in the tray'); }).catch(()=>{});
-    return;
-  }
-  if(d.act==='keys'){ invoke('open_settings').catch(()=>{}); closeNotch(); return; }
-  if(d.act==='refresh'){ invoke('refresh_usage').catch(()=>{}); toastSoon('↻','var(--accent)','Refreshing usage'); return; }
-  if(d.act==='tab-r9'){ setTab('r9'); return; }
+  if(d.sid){ closeAll(); invoke('focus_session',{id:d.sid}).then(ok=>{ if(ok===false) toast('!',AMBER,'Couldn’t bring that session to the front','Its window may be closed or hidden in the tray'); }).catch(()=>{}); return; }
+  if(d.act==='more'){ openPanel('usage'); return; }
+  if(d.act==='back'){ state='open'; renderStrip(); applyShape(); return; }
+  if(d.act==='keys'){ invoke('open_settings').catch(()=>{}); closeAll(); return; }
+  if(d.act==='refresh'){ invoke('refresh_usage').catch(()=>{}); notice('Refreshing usage…'); return; }
+  if(d.act==='tab-r9'){ openPanel('r9'); return; }
   if(d.act==='conns-reload'){ conns=null; connsErr=''; renderPage('r9'); return; }
   if(d.set){
     const v=JSON.parse(d.val);
@@ -922,150 +904,134 @@ panel.addEventListener('click',e=>{
   }
   if(d.toggle){ t.classList.toggle('on'); setPref(d.toggle,t.classList.contains('on')); return; }
   if(d.themePick){ setPref('theme',d.themePick); return; }
-  if(d.hide){
-    const hid=new Set(cfg.hidden_providers||[]);
-    hid.has(d.hide)?hid.delete(d.hide):hid.add(d.hide);
-    setPref('hidden_providers',[...hid]);
-    return;
-  }
+  if(d.hide){ const hid=new Set(cfg.hidden_providers||[]); hid.has(d.hide)?hid.delete(d.hide):hid.add(d.hide); setPref('hidden_providers',[...hid]); return; }
   if(d.conn){
     const c=(conns||[]).find(x=>x.id===d.conn); if(!c||t.disabled) return;
     const want=!c.active; t.disabled=true; t.classList.toggle('on',want);
-    invoke('router9_set_active',{id:c.id,active:want})
-      .then(()=>{ c.active=want; connsErr=''; })
+    invoke('router9_set_active',{id:c.id,active:want}).then(()=>{ c.active=want; connsErr=''; })
       .catch(err=>{ connsErr=String(err); t.classList.toggle('on',!want); })
       .finally(()=>{ t.disabled=false; if(curTab==='r9') renderPage('r9'); });
   }
-});
-function toastSoon(icon,color,title){ /* feedback while open: a short notice line */ notice(title); }
+}
+island.addEventListener('click',onClick);
+cardEl.addEventListener('click',onClick);
+L.closed.addEventListener('click',()=>{ if(!moved) openStrip(); });
+L.live.addEventListener('click',()=>{ if(!moved) openStrip(); });
 
-/* Horizontal swipe (trackpad) or Shift+wheel over the pages moves between tabs */
+/* horizontal swipe (trackpad) or Shift+wheel over the pages moves between tabs */
 let swipeAcc=0, swipeT=null;
 $('pagesWrap').addEventListener('wheel',e=>{
   const dx=Math.abs(e.deltaX)>Math.abs(e.deltaY)?e.deltaX:(e.shiftKey?e.deltaY:0);
   if(!dx) return;
-  e.preventDefault();
-  swipeAcc+=dx; clearTimeout(swipeT); swipeT=setTimeout(()=>swipeAcc=0,220);
-  if(Math.abs(swipeAcc)>60){
-    const vis=visibleTabs(), i=vis.indexOf(curTab);
-    const n=Math.max(0,Math.min(vis.length-1,i+(swipeAcc>0?1:-1)));
-    swipeAcc=0; if(vis[n]!==curTab) setTab(vis[n]);
-  }
+  e.preventDefault(); swipeAcc+=dx; clearTimeout(swipeT); swipeT=setTimeout(()=>swipeAcc=0,220);
+  if(Math.abs(swipeAcc)>60){ const vis=visibleTabs(), i=vis.indexOf(curTab), n=Math.max(0,Math.min(vis.length-1,i+(swipeAcc>0?1:-1))); swipeAcc=0; if(vis[n]!==curTab) setTab(vis[n]); }
 },{passive:false});
 
 /* ---------- Everything that follows a data change ---------- */
 function renderAll(){
-  checkEvents();
-  checkTips();
-  recordHistory();
-  updatePeek();
-  renderClosed();
-  // re-renders the current page too; the 9Router tab appears and disappears with 9Router
-  if(state==='open') setTab(curTab,false);
+  checkEvents(); checkTips(); recordHistory(); updatePeek(); renderClosed();
+  if(state==='open'){ renderStrip(); applyShape(); if(cardId) { const p=providers().find(x=>x.id===cardId); if(p){ cardEl.innerHTML=cardHtml(p); placeCard(); } } }
+  if(state==='panel') setTab(curTab,false);
 }
 
-/* ---------- Diagnostics + geometry ---------- */
-function jslog(m){invoke('log_js',{msg:String(m)}).catch(()=>{});}
-function callq(cmd,args){ return invoke(cmd,args).catch(e=>{notice(cmd+' failed: '+(e&&e.message||e));throw e;}); }
+/* ---------- Hit rectangles for the Rust click-through / hover poll ----------
+   The island as it is now and as it will be once the spring settles (so a growing island takes the
+   cursor at once), plus the card when it shows. Physical px, relative to the window. */
 function physRect(r){const k=window.devicePixelRatio||1;return [r.left*k,r.top*k,(r.right-r.left)*k,(r.bottom-r.top)*k];}
-// Open, the whole window is the island: report it so the Rust watchdog can tell when the cursor has left
-function armWatchdog(){
-  setTimeout(()=>{ if(state==='open') callq('set_expanded',{on:true,rects:[physRect({left:0,top:0,right:innerWidth,bottom:innerHeight})]}).catch(()=>{}); },OPEN_WAIT);
+function targetRect(){
+  const [w,h]=geom(), W=innerWidth, H=innerHeight, a=parseFloat(root.style.getPropertyValue('--along'))||.5;
+  const z=zoomNow();
+  const tw=w*z, th=h*z;
+  switch(edge){
+    case 'top': case 'free': return {left:W*a-tw/2,top:0,right:W*a+tw/2,bottom:th};
+    case 'bottom': return {left:W*a-tw/2,top:H-th,right:W*a+tw/2,bottom:H};
+    case 'right': return {left:W-tw,top:H*a-th/2,right:W,bottom:H*a+th/2};
+    default: return {left:0,top:H*a-th/2,right:tw,bottom:H*a+th/2};
+  }
 }
-const OPEN_WAIT=120;
-/* Design width for the current mode, mirroring notch_size() in main.rs. Deliberately unscaled:
-   the leftover mismatch measured here is the size setting (or a DPI mismatch), which fitZoom
-   turns into content zoom. */
-function designWidth(){
-  if(dragging) return GEO.drag[0];
-  const open=state==='open';
-  const pick=(o,c)=> open?o : peekWin===2?GEO.toast[0] : peekWin===1?GEO.live[0] : c;
-  if(cfg.drag_enabled) return pick(GEO.openTop[0],GEO.pill[0]);
-  if(dockEdge()==='top') return pick(GEO.openTop[0],GEO.pill[0])+2*GEO.fil; // plus the two fillets
-  return open?GEO.openSide[0] : peekWin===2?GEO.toast[0] : peekWin===1?GEO.live[0] : GEO.side[0];
+function reportRects(){
+  if(dragging) return;
+  const rects=[physRect(island.getBoundingClientRect()), physRect(targetRect())];
+  if(cardEl.classList.contains('show')) rects.push(physRect(cardEl.getBoundingClientRect()));
+  invoke('update_island_rect',{rects}).catch(()=>{});
 }
+let burstI=null;
+function burstRects(){ reportRects(); clearInterval(burstI); let n=0; burstI=setInterval(()=>{ reportRects(); if(++n>20) clearInterval(burstI); },40); }
+
+/* ---------- Diagnostics + zoom ---------- */
+function jslog(m){invoke('log_js',{msg:String(m)}).catch(()=>{});}
+function designWidth(){ return dragging ? WIN.drag[0] : (side()?WIN.tall[0]:WIN.wide[0]); }
+let zoomVal=1;
+function zoomNow(){ return zoomVal; }
 function fitZoom(){
   const z=Math.min(3,Math.max(0.4,innerWidth/designWidth()));
-  document.documentElement.style.zoom=(Math.abs(z-1)>0.02)?String(z):'';
+  zoomVal=(Math.abs(z-1)>0.02)?z:1;
+  document.documentElement.style.zoom=zoomVal===1?'':String(zoomVal);
   return z;
 }
 function reportDpr(){
   const z=fitZoom();
-  jslog(`dpr=${window.devicePixelRatio} inner=${innerWidth}x${innerHeight} cssZoom=${z.toFixed(3)} state=${state}`);
-  callq('report_dpr',{dpr:window.devicePixelRatio||1,w:innerWidth,h:innerHeight}).catch(()=>{});
+  jslog(`dpr=${window.devicePixelRatio} inner=${innerWidth}x${innerHeight} cssZoom=${z.toFixed(3)} edge=${edge}`);
+  invoke('report_dpr',{dpr:window.devicePixelRatio||1,w:innerWidth,h:innerHeight}).catch(()=>{});
+  burstRects();
 }
-reportDpr();
-window.addEventListener('resize',()=>{clearTimeout(window._dprT);window._dprT=setTimeout(()=>{reportDpr(); if(state==='open'){ armWatchdog(); setTab(curTab,false);} },120);});
-matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`).addEventListener('change',reportDpr);
+window.addEventListener('resize',()=>{clearTimeout(window._dprT);window._dprT=setTimeout(reportDpr,80);});
 
-/* ---------- Hover ----------
-   Closed: the pill (or the Live Activity / alert) is the hot area, with a short dwell so sweeping past
-   the edge does not fling the island open. Open: the whole window is the island; leaving it closes. */
-function inRect(x,y,r,pad){return x>=r.left-pad&&y>=r.top-pad&&x<r.right+pad&&y<r.bottom+pad;}
-function pointerInHot(x,y){
-  if(state==='open') return x>=0&&y>=0&&x<innerWidth&&y<innerHeight;
-  const el = (root.dataset.peek==='1'||root.dataset.peek==='2') ? live : closedEl;
-  return inRect(x,y,el.getBoundingClientRect(),6);
-}
-let hideTimer=null, dwellTimer=null;
-function scheduleHide(){clearTimeout(hideTimer);hideTimer=setTimeout(closeNotch,260);}
-document.addEventListener('mousemove',e=>{
+/* ---------- Hover (from the Rust cursor poll) ---------- */
+let dwellT=null, closeT=null;
+listen('island_hover',e=>{
   if(dragging) return;
-  if(pointerInHot(e.clientX,e.clientY)){
-    clearTimeout(hideTimer);
-    if(state!=='open'){
-      if(needLeave){ if(Date.now()<reopenAfter) return; needLeave=false; }
-      if(!dwellTimer) dwellTimer=setTimeout(()=>{dwellTimer=null;openNotch();},180);
-    }
+  if(e.payload){
+    clearTimeout(closeT);
+    if(state==='idle' && !dwellT) dwellT=setTimeout(()=>{ dwellT=null; openStrip(); },140);
   }else{
-    clearTimeout(dwellTimer); dwellTimer=null; needLeave=false;
-    if(state==='open') scheduleHide();
+    clearTimeout(dwellT); dwellT=null;
+    if(state!=='idle'){ clearTimeout(closeT); closeT=setTimeout(closeAll,300); }
   }
-});
-document.addEventListener('mouseout',e=>{ if(!e.relatedTarget){ clearTimeout(dwellTimer); dwellTimer=null; if(state==='open') scheduleHide(); } });
-listen('pointer_left',()=>{clearTimeout(hideTimer);closeNotch();}).catch(()=>{});
+}).catch(()=>{});
 
 /* ---------- Drag ----------
-   Press and move more than 4 px: the island lifts off as a plain pill that follows the cursor (Rust
-   moves the window), and on release it glides to the nearest of the three spots — the middle of the
-   top, left or right edge — settling with a small bounce. A press without movement opens it. Open,
-   the tab bar is the grip, so every button and switch below it stays a button. */
+   Press and move more than 4 px: the island lifts off as a pill that follows the cursor (Rust moves
+   the window) and, on release, snaps to the nearest edge right where it was let go — or stays put
+   floating when "Float" is on — settling with a small bounce. The pill, the strip and the panel's tab
+   row are grips; buttons and switches stay buttons. */
+let moved=false;
 function beginPress(e){
   if(e.button!==0) return;
-  if(state==='open' && e.target.closest('button')) return;
-  press={x:e.clientX,y:e.clientY};
+  if(e.target.closest('button:not(.cell),.sw,.seg,.swatch,.chip,.tile,.page,#card')) return;
+  press={x:e.clientX,y:e.clientY}; moved=false;
 }
-closedEl.addEventListener('mousedown',beginPress);
-live.addEventListener('mousedown',beginPress);
-$('tabs').addEventListener('mousedown',beginPress);
+island.addEventListener('mousedown',beginPress);
 document.addEventListener('mousemove',e=>{
   if(!press||dragging) return;
   if(Math.abs(e.clientY-press.y)>4||Math.abs(e.clientX-press.x)>4){
-    dragging=true;
-    clearTimeout(hideTimer); clearTimeout(dwellTimer); dwellTimer=null; clearTimeout(pendingShrink);
-    if(state==='open'){ state='idle'; root.dataset.state='idle'; invoke('set_expanded',{on:false,rects:null}).catch(()=>{}); }
-    renderClosed();
-    $('dragpill').innerHTML=closedEl.innerHTML;
+    dragging=true; moved=true;
+    clearTimeout(closeT); clearTimeout(dwellT); dwellT=null;
+    hideCard(true);
+    $('dragpill').innerHTML=closedHtml(false);
+    state='idle'; applyShape();
     root.dataset.drag='1';
     invoke('drag_begin').catch(err=>{notice('drag_begin failed: '+err);dragging=false;root.dataset.drag='0';});
   }
 });
-document.addEventListener('mouseup',e=>{
-  if(e.button!==0) return;
-  if(press&&!dragging&&state!=='open') openNotch();
-  press=null;
-});
-listen('drag_end',()=>{
-  dragging=false; press=null;
-  root.dataset.drag='0';
-  setTimeout(pumpToasts,400);
-}).catch(()=>{});
+document.addEventListener('mouseup',()=>{ press=null; setTimeout(()=>moved=false,0); });
+// The window moved under the cursor, so the page may never see that drag's mouseup: clear the
+// "just dragged" flag here too, or it would swallow the next click
+listen('drag_end',()=>{ dragging=false; press=null; setTimeout(()=>moved=false,60); root.dataset.drag='0'; setTimeout(pumpToasts,400); }).catch(()=>{});
 
-function notice(msg){
-  const n=$('notice');
-  n.textContent=String(msg||'');n.classList.add('show');
-  clearTimeout(n._h);n._h=setTimeout(()=>n.classList.remove('show'),4000);
+function notice(msg){ const n=$('notice'); n.textContent=String(msg||''); n.classList.add('show'); clearTimeout(n._h); n._h=setTimeout(()=>n.classList.remove('show'),4000); }
+
+/* ---------- Placement (from Rust): the edge, and where along the window the island sits ---------- */
+function applyPlacement(p){
+  if(!p||!p.edge) return;
+  edge=p.edge; root.dataset.edge=edge;
+  root.style.setProperty('--along',String(p.along??.5));
+  L.strip.dataset.key=''; L.closed.dataset.html='';
+  fitZoom(); renderClosed(); if(state==='open') renderStrip();
+  applyShape();
 }
+listen('placement',e=>applyPlacement(e.payload)).catch(()=>{});
+invoke('get_placement').then(applyPlacement).catch(()=>{});
 
 /* ---------- Data ---------- */
 const onSnap=(setter)=>e=>{ setter(e.payload); renderAll(); };
@@ -1087,17 +1053,15 @@ get('get_deepseek',v=>dsSnap=v||dsSnap); get('get_state',v=>stateSnap=v||stateSn
 get('get_glyphs',v=>glyphs=v||glyphs);
 
 function applyCfg(){
-  root.style.opacity = (cfg.opacity!=null?cfg.opacity:1);
-  root.dataset.edge = cfg.drag_enabled ? 'top' : dockEdge();
-  root.dataset.mode = cfg.drag_enabled?'free':'dock';
-  root.dataset.theme = (!cfg.theme||cfg.theme==='dark') ? 'midnight' : cfg.theme;
-  closedEl.dataset.html='';
-  fitZoom();
+  root.style.opacity=(cfg.opacity!=null?cfg.opacity:1);
+  root.dataset.theme=(!cfg.theme||cfg.theme==='dark')?'midnight':cfg.theme;
   renderAll();
-  if(state==='open') renderPage('settings'); // a setting changed from the Settings tab: reflect it
+  if(state==='panel'&&curTab==='settings') renderPage('settings');
 }
 listen('config',e=>{cfg=e.payload||cfg;applyCfg();}).catch(()=>{});
 invoke('get_config').then(c=>{cfg=c||cfg;applyCfg();}).catch(()=>{});
+reportDpr();
+applyShape();
 </script>
 </body>
 </html>

@@ -60,6 +60,12 @@ and provider semantics. It is developed at
 upstream project as its `windows/` tree; the two are kept in sync. The session-detection engine
 originated in [Im-Midi/Pac-Man](https://github.com/Im-Midi/Pac-Man) (MIT).
 
+## Credits & inspiration
+
+- **NOTCH AI PROVIDE QUOTA TRACKER** — created by **penyu101**.
+- Built on [Codenotch](https://github.com/vinzdg/codenotch) and its Windows port [Im-Midi/codenotch-windows](https://github.com/Im-Midi/codenotch-windows) (MIT).
+- The Dynamic Island motion is inspired by [**Bloom**](https://github.com/sehajveersingh2005/bloom) by sehajveersingh2005 — its approach of a fixed transparent window with click-through, and an island whose width, height and corners animate on independent springs. The implementation here is written from scratch (Bloom is GPL-3.0; no Bloom source code is included).
+
 ## License
 
 MIT — see `LICENSE`. The Codenotch design and name belong to the upstream author.
