@@ -57,6 +57,10 @@ pub struct Config {
     /// Provider ids the pill leaves out
     #[serde(default)]
     pub hidden_providers: Vec<String>,
+    /// The monitor the notch lives on, by its Windows display name (`\\.\DISPLAY2`), set by a drag;
+    /// None, or a name no longer connected, means the primary monitor
+    #[serde(default)]
+    pub monitor: Option<String>,
 }
 
 fn default_theme() -> String {
@@ -110,6 +114,7 @@ impl Default for Config {
             theme: default_theme(),
             provider_order: Vec::new(),
             hidden_providers: Vec::new(),
+            monitor: None,
         }
     }
 }

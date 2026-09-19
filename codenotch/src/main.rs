@@ -29,7 +29,7 @@ use tauri::{AppHandle, Emitter, Manager};
 /// Logical size of the notch window when open on a side edge: the 70 pt pill column plus room for the hover card.
 pub const NOTCH_W: f64 = 340.0;
 /// Hand-bumped build tag, written to run.log at startup so a log can always be matched to the exe that wrote it.
-pub const BUILD: &str = "r37";
+pub const BUILD: &str = "r38";
 pub const NOTCH_H: f64 = 460.0; // 300 clipped the card once it held three window blocks plus the session list
 /// Open size in island form (top/bottom edge, or free-floating): cells run in a row, card sits under them.
 /// Wide enough for six cells (6×56 + 5×18 + padding = 466) plus room for the card to sit under an end cell.
@@ -173,6 +173,33 @@ fn notch_size(edge: &str, free_move: bool, expanded: bool, peek: u8, notch_scale
 
 /// Places the notch: docked against its edge (the pill's centre held at the saved ratio along that
 /// edge, so growing and shrinking never makes it wander), or free-floating around the saved centre.
+/// The monitor the notch lives on: the one it was last dropped on (saved by name), or the primary
+/// one when that screen is gone — unplugged, or renamed after a driver update. Everything used to
+/// assume the primary monitor, so a notch dragged onto a second screen snapped straight back.
+fn notch_monitor(app: &AppHandle) -> Option<tauri::Monitor> {
+    let want = app.state::<AppState>().cfg.lock().ok().and_then(|c| c.monitor.clone());
+    if let (Some(name), Ok(list)) = (want, app.available_monitors()) {
+        if let Some(m) = list.into_iter().find(|m| m.name().map(|n| *n == name).unwrap_or(false)) {
+            return Some(m);
+        }
+    }
+    app.primary_monitor().ok().flatten()
+}
+
+/// The monitor containing a physical point (where the notch was let go), else the primary one
+fn monitor_at(app: &AppHandle, x: i32, y: i32) -> Option<tauri::Monitor> {
+    if let Ok(list) = app.available_monitors() {
+        let hit = list.into_iter().find(|m| {
+            let (p, s) = (m.position(), m.size());
+            x >= p.x && y >= p.y && x < p.x + s.width as i32 && y < p.y + s.height as i32
+        });
+        if hit.is_some() {
+            return hit;
+        }
+    }
+    app.primary_monitor().ok().flatten()
+}
+
 pub fn place_notch(app: &AppHandle) {
     let Some(w) = app.get_webview_window("notch") else {
         return;
@@ -191,7 +218,7 @@ pub fn place_notch(app: &AppHandle) {
     };
     let expanded = EXPANDED.load(std::sync::atomic::Ordering::Relaxed);
     let cells = visible_providers(app);
-    if let Ok(Some(mon)) = w.primary_monitor() {
+    if let Some(mon) = notch_monitor(app) {
         // Two monitors at different scales (150 % and 200 % in practice): the physical size can
         // end up converted with the *other* monitor's scale factor depending on where the window
         // is created and then moved, leaving the WebView ~256 logical px wide instead of 340.
@@ -310,6 +337,7 @@ pub fn reset_bar(app: &AppHandle) {
         c.bar_x = None;
         c.bar_y = None;
         c.edge = "right".into();
+        c.monitor = None; // back to the primary monitor
         config::save(&c);
     }
     place_notch(app);
@@ -356,8 +384,10 @@ fn drag_begin(app: AppHandle) {
             let _ = app.emit("drag_end", false);
         };
         let Some(w) = app.get_webview_window("notch") else { return bail(&app) };
-        let (Ok(Some(mon)), Ok(cur)) = (w.primary_monitor(), app.cursor_position()) else { return bail(&app) };
-        let ms = mon.scale_factor();
+        let Ok(cur) = app.cursor_position() else { return bail(&app) };
+        // Sized for the screen it is picked up on; where it lands decides the monitor it docks to
+        let Some(start_mon) = monitor_at(&app, cur.x.round() as i32, cur.y.round() as i32) else { return bail(&app) };
+        let ms = start_mon.scale_factor();
         let side = (BALL * notch_scale * ms).round() as i32;
         // It lands as the closed handle, whatever it was when picked up; the card is gone too
         EXPANDED.store(false, Ordering::Relaxed);
@@ -384,6 +414,9 @@ fn drag_begin(app: AppHandle) {
         }
 
         let centre = (last.0 + side / 2, last.1 + side / 2);
+        // The screen it was let go on — any monitor, not just the primary one
+        let mon = monitor_at(&app, centre.0, centre.1).unwrap_or_else(|| start_mon.clone());
+        let mon_name = mon.name().cloned();
         if free_move {
             // Closed, the island's anchor is its window centre — exactly where the ball was let go
             {
@@ -391,9 +424,10 @@ fn drag_begin(app: AppHandle) {
                 let mut c = st.cfg.lock().unwrap();
                 c.bar_x = Some(centre.0);
                 c.bar_y = Some(centre.1);
+                c.monitor = mon_name.clone();
                 config::save(&c);
             }
-            applog(&format!("notch drag (island): centre=({},{})", centre.0, centre.1));
+            applog(&format!("notch drag (island): centre=({},{}) monitor={mon_name:?}", centre.0, centre.1));
         } else {
             let (mx, my) = (mon.position().x, mon.position().y);
             let (mw, mh) = (mon.size().width as i32, mon.size().height as i32);
@@ -415,9 +449,10 @@ fn drag_begin(app: AppHandle) {
                 let mut c = st.cfg.lock().unwrap();
                 c.edge = edge.to_string();
                 c.notch_y = ratio.clamp(0.0, 1.0);
+                c.monitor = mon_name.clone();
                 config::save(&c);
             }
-            applog(&format!("notch drag: snapped to {edge} ratio={ratio:.3}"));
+            applog(&format!("notch drag: snapped to {edge} ratio={ratio:.3} monitor={mon_name:?}"));
             // Slide the button to the spot the handle will occupy, flush against that edge, with an
             // ease-out — the AssistiveTouch snap. No deformation: the handle simply takes its place.
             let along_y = (centre.1 - side / 2).clamp(my, my + (mh - side).max(0));
@@ -500,10 +535,10 @@ fn noactivate(_app: &AppHandle) {}
 /// presentation mode are taken from Windows; anything else must be the foreground window itself
 /// covering the whole primary monitor without being merely maximized.
 #[cfg(windows)]
-fn fullscreen_busy() -> Option<String> {
-    use windows::Win32::Foundation::{POINT, RECT};
+fn fullscreen_busy(notch: isize) -> Option<String> {
+    use windows::Win32::Foundation::{HWND, RECT};
     use windows::Win32::Graphics::Gdi::{
-        GetMonitorInfoW, MonitorFromPoint, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTOPRIMARY,
+        GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTOPRIMARY,
     };
     use windows::Win32::UI::Shell::{SHQueryUserNotificationState, QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN};
     use windows::Win32::UI::WindowsAndMessaging::{
@@ -531,9 +566,9 @@ fn fullscreen_busy() -> Option<String> {
         if ["Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd"].contains(&class.as_str()) {
             return None;
         }
-        // Only the monitor the notch lives on (it is placed on the primary one)
+        // Only the monitor the notch itself is on — full screen on the other screen leaves it alone
         let mon = MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST);
-        if mon != MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) {
+        if mon != MonitorFromWindow(HWND(notch as *mut core::ffi::c_void), MONITOR_DEFAULTTOPRIMARY) {
             return None;
         }
         let mut mi = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
@@ -550,8 +585,18 @@ fn fullscreen_busy() -> Option<String> {
     }
 }
 #[cfg(not(windows))]
-fn fullscreen_busy() -> Option<String> {
+fn fullscreen_busy(_notch: isize) -> Option<String> {
     None
+}
+
+/// The notch window's handle as a plain number, for the Win32 checks above (0 when unavailable)
+#[cfg(windows)]
+fn notch_hwnd(app: &AppHandle) -> isize {
+    app.get_webview_window("notch").and_then(|w| w.hwnd().ok()).map(|h| h.0 as isize).unwrap_or(0)
+}
+#[cfg(not(windows))]
+fn notch_hwnd(_app: &AppHandle) -> isize {
+    0
 }
 
 /// Shows the notch without activating it: a plain show() may take focus from the app in front
@@ -619,7 +664,7 @@ fn start_fullscreen_watch(app: AppHandle) {
                 }
             }
             let enabled = app.state::<AppState>().cfg.lock().map(|c| c.hide_fullscreen).unwrap_or(false);
-            let why = if enabled && !DRAGGING.load(std::sync::atomic::Ordering::SeqCst) { fullscreen_busy() } else { None };
+            let why = if enabled && !DRAGGING.load(std::sync::atomic::Ordering::SeqCst) { fullscreen_busy(notch_hwnd(&app)) } else { None };
             // Two readings in a row before hiding, so a window that covers the screen for a moment
             // (a splash screen, a transition) does not blink the notch away; shown again at once.
             streak = if why.is_some() { streak.saturating_add(1) } else { 0 };
@@ -798,10 +843,8 @@ pub fn applog(line: &str) {
 #[tauri::command]
 fn report_dpr(app: AppHandle, dpr: f64, w: f64, h: f64) {
     let Some(win) = app.get_webview_window("notch") else { return };
-    let want = win
-        .primary_monitor()
-        .ok()
-        .flatten()
+    // The scale of the monitor the notch lives on, which is no longer always the primary one
+    let want = notch_monitor(&app)
         .map(|m| m.scale_factor())
         .unwrap_or_else(|| win.scale_factor().unwrap_or(1.0));
     let mut z = ZOOM.lock().unwrap();
