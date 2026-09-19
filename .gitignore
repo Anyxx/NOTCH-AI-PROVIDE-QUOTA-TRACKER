@@ -11,3 +11,6 @@ codenotch/gen/
 upstream-proposal.md
 发布指引.md
 _to_delete/
+
+# Local Claude Code tooling (preview server config)
+.claude/
