@@ -57,10 +57,11 @@ pub fn build_menu(app: &AppHandle, lang: &str) -> tauri::Result<Menu<Wry>> {
         .checked(crate::autostart::is_enabled())
         .build(app)?;
 
-    let (free_move, opacity, notch_scale, live, levels, compact, hide_fs, theme) = {
+    let (free_move, opacity, notch_scale, live, levels, hide_fs, theme) = {
         let st = app.state::<crate::AppState>();
         let c = st.cfg.lock().unwrap();
-        (c.drag_enabled, c.opacity, c.scale, c.live_activity, c.alert_levels.clone(), c.compact, c.hide_fullscreen, c.theme.clone())
+        let theme = if c.theme == "dark" { "midnight".to_string() } else { c.theme.clone() };
+        (c.drag_enabled, c.opacity, c.scale, c.live_activity, c.alert_levels.clone(), c.hide_fullscreen, theme)
     };
     // Which build is running, at a glance: installers of different rounds otherwise look identical
     let version = MenuItemBuilder::with_id("version", format!("Codenotch v{} ({}) · Created by penyu101", env!("CARGO_PKG_VERSION"), crate::BUILD))
@@ -69,24 +70,14 @@ pub fn build_menu(app: &AppHandle, lang: &str) -> tauri::Result<Menu<Wry>> {
     let hide_fs_item = CheckMenuItemBuilder::with_id("hide-fullscreen", tr(lang, "hide_fullscreen"))
         .checked(hide_fs)
         .build(app)?;
-    let theme_items: Vec<_> = ["dark", "graphite", "glass"]
+    let theme_items: Vec<_> = crate::THEMES
         .iter()
-        .map(|t| {
-            let key = match *t {
-                "graphite" => "theme_graphite",
-                "glass" => "theme_glass",
-                _ => "theme_dark",
-            };
-            CheckMenuItemBuilder::with_id(format!("theme-{t}"), tr(lang, key)).checked(theme == *t).build(app)
-        })
+        .map(|(id, label)| CheckMenuItemBuilder::with_id(format!("theme-{id}"), *label).checked(theme == *id).build(app))
         .collect::<tauri::Result<_>>()?;
     let theme_refs: Vec<&dyn tauri::menu::IsMenuItem<Wry>> =
         theme_items.iter().map(|i| i as &dyn tauri::menu::IsMenuItem<Wry>).collect();
     let theme_menu = SubmenuBuilder::new(app, tr(lang, "theme")).items(&theme_refs).build()?;
     let layout = MenuItemBuilder::with_id("layout", tr(lang, "layout")).build(app)?;
-    let compact_item = CheckMenuItemBuilder::with_id("compact", tr(lang, "compact"))
-        .checked(compact)
-        .build(app)?;
     let free = CheckMenuItemBuilder::with_id("free-move", tr(lang, "free_move"))
         .checked(free_move)
         .build(app)?;
@@ -139,7 +130,6 @@ pub fn build_menu(app: &AppHandle, lang: &str) -> tauri::Result<Menu<Wry>> {
         .item(&reset)
         .item(&free)
         .item(&live_item)
-        .item(&compact_item)
         .item(&alerts_menu)
         .item(&hide_fs_item)
         .item(&theme_menu)
@@ -152,7 +142,7 @@ pub fn build_menu(app: &AppHandle, lang: &str) -> tauri::Result<Menu<Wry>> {
         .build()
 }
 
-fn refresh_menu(app: &AppHandle) {
+pub(crate) fn refresh_menu(app: &AppHandle) {
     let lang = {
         let st = app.state::<crate::AppState>();
         let c = st.cfg.lock().unwrap();

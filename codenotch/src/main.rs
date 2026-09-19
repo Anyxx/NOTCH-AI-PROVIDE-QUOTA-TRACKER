@@ -26,44 +26,36 @@ mod watcher;
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
 
-/// Logical size of the notch window when open on a side edge: the 70 pt pill column plus room for the hover card.
-pub const NOTCH_W: f64 = 340.0;
 /// Hand-bumped build tag, written to run.log at startup so a log can always be matched to the exe that wrote it.
-pub const BUILD: &str = "r38";
-pub const NOTCH_H: f64 = 460.0; // 300 clipped the card once it held three window blocks plus the session list
-/// Open size in island form (top/bottom edge, or free-floating): cells run in a row, card sits under them.
-/// Wide enough for six cells (6×56 + 5×18 + padding = 466) plus room for the card to sit under an end cell.
-pub const ISLAND_W: f64 = 560.0;
-pub const ISLAND_H: f64 = 440.0;
-/// The island hangs from the top of its own window (16 px inset + ~52 px half-height), so this is
-/// where its centre sits. Free-floating placement anchors on that point, not the window centre, or
-/// the island would jump upwards the moment the window grew around the handle.
-const ISLAND_ANCHOR_Y: f64 = 68.0;
-/// Cell metrics, mirroring ui/notch.html: ring 56 + 6 gap + 18 label, stacked with a 14 gap inside 18 padding.
-/// Only the *height* of the open window follows the provider count — the width stays fixed so the page's
-/// design-width zoom correction (fitZoom) keeps a single number to compare against.
-const CELL_H: f64 = 80.0;
-const COL_GAP: f64 = 14.0;
-const CARD_H: f64 = 280.0;
-/// Closed size. The window shrinks to roughly the handle itself so the rest of the screen stays clickable —
-/// an always-on-top window swallows clicks over its transparent area, so "hidden" has to mean "small", not "invisible".
-pub const HANDLE_LONG: f64 = 132.0;
-pub const HANDLE_SHORT: f64 = 18.0;
-/// Closed but "peeking": the handle grown into a small pill, Dynamic Island style — a Live Activity
-/// (what is working right now) or, larger, a passing alert. Mirrored in ui/notch.html (PEEK_W).
-const LIVE_W: f64 = 240.0;
-const LIVE_H: f64 = 44.0;
-const TOAST_W: f64 = 340.0;
-const TOAST_H: f64 = 64.0;
+pub const BUILD: &str = "r39";
+/// Island geometry, logical px, mirrored in ui/notch.html (GEO). Docked, the island is welded to the
+/// middle of the top, left or right edge, MacBook-notch style, with a concave fillet of FIL on each
+/// side where it meets the screen: the window is the island plus those two fillets. The window
+/// always matches the current shape — an always-on-top window swallows clicks over its whole
+/// rectangle, so "closed" has to mean small, not merely invisible.
+const FIL: f64 = 12.0;
+/// Closed on the top edge: a small pill carrying the tightest quota and the next reset
+const PILL_W: f64 = 220.0;
+const PILL_H: f64 = 34.0;
+/// Closed on a side edge: the same pill standing up
+const SIDE_W: f64 = 34.0;
+const SIDE_H: f64 = 150.0;
+/// Floating freely there is no edge to hang from: a fully rounded pill, a little taller
+const FREE_H: f64 = 40.0;
+/// Closed but peeking: a Live Activity, or (larger) a passing alert
+const LIVE: (f64, f64) = (300.0, 42.0);
+const TOAST: (f64, f64) = (380.0, 60.0);
+/// Open: the panel the island springs into (usage, details, 9Router, settings)
+const OPEN_TOP: (f64, f64) = (560.0, 470.0);
+const OPEN_SIDE: (f64, f64) = (430.0, 520.0);
+/// Where a floating island's pill sits in its open window: the panel grows down from the pill, so
+/// the anchor is the pill's centre at the top of the window rather than the window's centre
+const ISLAND_ANCHOR_Y: f64 = FREE_H / 2.0;
 
 /// Open (true) or collapsed to the handle (false). The page drives this through `notch_expand`.
 static EXPANDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// 0 = plain handle, 1 = Live Activity pill, 2 = alert pill. Only matters while closed. Set by `notch_peek`.
 static PEEK: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
-
-fn edge_is_horizontal(edge: &str) -> bool {
-    edge == "top" || edge == "bottom"
-}
 
 pub struct AppState {
     pub store: Mutex<state::Store>,
@@ -132,6 +124,21 @@ fn visible_providers(app: &AppHandle) -> usize {
     n.max(1) // the page never hides every cell: Claude comes back when nothing else is left
 }
 
+/// Colour themes, mirrored in ui/notch.html (THEMES) and the settings window. "dark" is the old
+/// name of midnight, still accepted from existing config files.
+pub const THEMES: [(&str, &str); 7] = [
+    ("midnight", "Midnight"),
+    ("graphite", "Graphite"),
+    ("ocean", "Ocean"),
+    ("sunset", "Sunset"),
+    ("forest", "Forest"),
+    ("rose", "Rose"),
+    ("glass", "Glass"),
+];
+fn theme_ok(t: &str) -> bool {
+    t == "dark" || THEMES.iter().any(|(id, _)| *id == t)
+}
+
 /// Provider order, hidden providers and theme, from the settings window's layout card
 #[tauri::command]
 fn save_layout(app: AppHandle, order: Vec<String>, hidden: Vec<String>, theme: String) {
@@ -140,7 +147,7 @@ fn save_layout(app: AppHandle, order: Vec<String>, hidden: Vec<String>, theme: S
         let mut c = st.cfg.lock().unwrap();
         c.provider_order = order;
         c.hidden_providers = hidden;
-        if ["dark", "graphite", "glass"].contains(&theme.as_str()) {
+        if theme_ok(&theme) {
             c.theme = theme;
         }
         config::save(&c);
@@ -149,24 +156,85 @@ fn save_layout(app: AppHandle, order: Vec<String>, hidden: Vec<String>, theme: S
     place_notch(&app);
 }
 
-/// Logical window size for the current mode: open or collapsed to the handle, docked on a side edge
-/// (tall) or lying along a top/bottom edge or floating free (wide island). A tall column has to fit
-/// every cell — six providers need ~586 px, well past the 460 the notch used when there were four.
-fn notch_size(edge: &str, free_move: bool, expanded: bool, peek: u8, notch_scale: f64, cells: usize) -> (f64, f64) {
-    let horizontal = free_move || edge_is_horizontal(edge);
-    if !expanded && peek > 0 {
-        let (w, h) = if peek >= 2 { (TOAST_W, TOAST_H) } else { (LIVE_W, LIVE_H) };
-        return (w * notch_scale, h * notch_scale);
-    }
-    let (w, h) = match (expanded, horizontal) {
-        (true, true) => (ISLAND_W, ISLAND_H),
-        (true, false) => {
-            let n = cells.max(1) as f64;
-            let pill_h = n * CELL_H + (n - 1.0) * COL_GAP + 36.0;
-            (NOTCH_W, pill_h.max(CARD_H) + 48.0)
+/// One setting changed from the island's own Settings tab. The notch never takes focus, but it
+/// takes clicks, so everything there is a button, a switch or a swatch — nothing to type.
+#[tauri::command]
+fn set_pref(app: AppHandle, key: String, value: serde_json::Value) -> Result<(), String> {
+    let bad = || format!("bad value for {key}");
+    {
+        let st = app.state::<AppState>();
+        let mut c = st.cfg.lock().unwrap();
+        match key.as_str() {
+            "theme" => {
+                let t = value.as_str().ok_or_else(bad)?;
+                if !theme_ok(t) {
+                    return Err(bad());
+                }
+                c.theme = t.to_string();
+            }
+            "edge" => {
+                let e = value.as_str().ok_or_else(bad)?;
+                if !["top", "left", "right"].contains(&e) {
+                    return Err(bad());
+                }
+                c.edge = e.to_string();
+                c.notch_y = 0.5;
+                c.drag_enabled = false; // choosing a spot means docking there
+            }
+            "free" => c.drag_enabled = value.as_bool().ok_or_else(bad)?,
+            "live_activity" => c.live_activity = value.as_bool().ok_or_else(bad)?,
+            "hide_fullscreen" => c.hide_fullscreen = value.as_bool().ok_or_else(bad)?,
+            "alert_levels" => {
+                let v: Vec<u32> = serde_json::from_value(value).map_err(|_| bad())?;
+                c.alert_levels = v.into_iter().filter(|p| (1..=100).contains(p)).collect();
+            }
+            "scale" => c.scale = value.as_f64().ok_or_else(bad)?.clamp(0.7, 1.6),
+            "opacity" => c.opacity = value.as_f64().ok_or_else(bad)?.clamp(0.15, 1.0),
+            "hidden_providers" => c.hidden_providers = serde_json::from_value(value).map_err(|_| bad())?,
+            _ => return Err(format!("unknown setting {key}")),
         }
-        (false, true) => (HANDLE_LONG, HANDLE_SHORT),
-        (false, false) => (HANDLE_SHORT, HANDLE_LONG),
+        config::save(&c);
+    }
+    emit_config(&app);
+    place_notch(&app);
+    tray::refresh_menu(&app);
+    Ok(())
+}
+
+/// The three docked positions: the middle of the top, left or right edge. A "bottom" saved before
+/// snapping existed is read as top.
+fn dock_edge(edge: &str) -> &'static str {
+    match edge {
+        "left" => "left",
+        "right" => "right",
+        _ => "top",
+    }
+}
+
+/// Logical window size for the current mode — closed pill, peek (Live Activity / alert) or open
+/// panel — docked on the top edge (wide), on a side edge (tall), or floating free
+fn notch_size(edge: &str, free_move: bool, expanded: bool, peek: u8, notch_scale: f64, _cells: usize) -> (f64, f64) {
+    let (w, h) = if free_move {
+        match (expanded, peek) {
+            (true, _) => OPEN_TOP,
+            (false, 0) => (PILL_W, FREE_H),
+            (false, 1) => LIVE,
+            _ => TOAST,
+        }
+    } else if dock_edge(edge) == "top" {
+        match (expanded, peek) {
+            (true, _) => (OPEN_TOP.0 + 2.0 * FIL, OPEN_TOP.1),
+            (false, 0) => (PILL_W + 2.0 * FIL, PILL_H),
+            (false, 1) => (LIVE.0 + 2.0 * FIL, LIVE.1),
+            _ => (TOAST.0 + 2.0 * FIL, TOAST.1),
+        }
+    } else {
+        match (expanded, peek) {
+            (true, _) => (OPEN_SIDE.0, OPEN_SIDE.1 + 2.0 * FIL),
+            (false, 0) => (SIDE_W, SIDE_H + 2.0 * FIL),
+            (false, 1) => (LIVE.0, LIVE.1 + 2.0 * FIL),
+            _ => (TOAST.0, TOAST.1 + 2.0 * FIL),
+        }
     };
     (w * notch_scale, h * notch_scale)
 }
@@ -205,7 +273,7 @@ pub fn place_notch(app: &AppHandle) {
         return;
     };
     let scale = w.scale_factor().unwrap_or(1.0);
-    let (free_move, free_centre, notch_scale, edge, ratio) = {
+    let (free_move, free_centre, notch_scale, edge, _ratio) = {
         let st = app.state::<AppState>();
         let c = st.cfg.lock().unwrap();
         (
@@ -242,24 +310,12 @@ pub fn place_notch(app: &AppHandle) {
             let anchor = island_anchor_y(expanded, wh, notch_scale);
             clamp_to_virtual_screen(cx - ww / 2, cy - anchor, ww, wh)
         } else {
-            match edge.as_str() {
-                // Along the edge the centre comes from the saved ratio; across it the window is flush.
-                "left" => {
-                    let y = (my as f64 + mh as f64 * ratio - wh as f64 / 2.0).round() as i32;
-                    (mx, y.clamp(my, my + (mh - wh).max(0)))
-                }
-                "top" => {
-                    let x = (mx as f64 + mw as f64 * ratio - ww as f64 / 2.0).round() as i32;
-                    (x.clamp(mx, mx + (mw - ww).max(0)), my)
-                }
-                "bottom" => {
-                    let x = (mx as f64 + mw as f64 * ratio - ww as f64 / 2.0).round() as i32;
-                    (x.clamp(mx, mx + (mw - ww).max(0)), my + mh - wh)
-                }
-                _ => {
-                    let y = (my as f64 + mh as f64 * ratio - wh as f64 / 2.0).round() as i32;
-                    (mx + mw - ww, y.clamp(my, my + (mh - wh).max(0)))
-                }
+            // Docked: always the middle of its edge, where the eye expects an island on any screen
+            // size; across the edge the window is flush, so the island grows out of the edge itself
+            match dock_edge(&edge) {
+                "left" => (mx, my + (mh - wh) / 2),
+                "right" => (mx + mw - ww, my + (mh - wh) / 2),
+                _ => (mx + (mw - ww) / 2, my),
             }
         };
         let _ = w.set_position(tauri::PhysicalPosition::new(x, y));
@@ -344,10 +400,10 @@ pub fn reset_bar(app: &AppHandle) {
     emit_config(app);
 }
 
-/// While dragged the notch is a small AssistiveTouch-style button (the page draws it) and the window
-/// shrinks to this square around it: room for its shadow, and nothing else of the notch to click on.
-/// Mirrored in ui/notch.html (BALL).
-pub const BALL: f64 = 84.0;
+/// While dragged the island travels as a plain pill (the page draws it) in a window of this size:
+/// room for the pill and its shadow, nothing else to click on. Mirrored in ui/notch.html (GEO.drag).
+pub const DRAG_W: f64 = 170.0;
+pub const DRAG_H: f64 = 60.0;
 
 /// Drag, the iOS AssistiveTouch gesture. The page calls this once a press on the handle or pill moves
 /// more than 4 px; from then on a Rust thread follows the system cursor (WebView mousemove is
@@ -388,13 +444,13 @@ fn drag_begin(app: AppHandle) {
         // Sized for the screen it is picked up on; where it lands decides the monitor it docks to
         let Some(start_mon) = monitor_at(&app, cur.x.round() as i32, cur.y.round() as i32) else { return bail(&app) };
         let ms = start_mon.scale_factor();
-        let side = (BALL * notch_scale * ms).round() as i32;
-        // It lands as the closed handle, whatever it was when picked up; the card is gone too
+        let (dw, dh) = ((DRAG_W * notch_scale * ms).round() as i32, (DRAG_H * notch_scale * ms).round() as i32);
+        // It lands closed, whatever it was when picked up
         EXPANDED.store(false, Ordering::Relaxed);
         *HOT.lock().unwrap() = None;
-        let _ = w.set_size(tauri::PhysicalSize::new(side as u32, side as u32));
+        let _ = w.set_size(tauri::PhysicalSize::new(dw as u32, dh as u32));
         let centred = |x: f64, y: f64| {
-            clamp_to_virtual_screen((x - side as f64 / 2.0).round() as i32, (y - side as f64 / 2.0).round() as i32, side, side)
+            clamp_to_virtual_screen((x - dw as f64 / 2.0).round() as i32, (y - dh as f64 / 2.0).round() as i32, dw, dh)
         };
         let mut last = centred(cur.x, cur.y);
         let _ = w.set_position(tauri::PhysicalPosition::new(last.0, last.1));
@@ -413,7 +469,7 @@ fn drag_begin(app: AppHandle) {
             std::thread::sleep(Duration::from_millis(8));
         }
 
-        let centre = (last.0 + side / 2, last.1 + side / 2);
+        let centre = (last.0 + dw / 2, last.1 + dh / 2);
         // The screen it was let go on — any monitor, not just the primary one
         let mon = monitor_at(&app, centre.0, centre.1).unwrap_or_else(|| start_mon.clone());
         let mon_name = mon.name().cloned();
@@ -431,42 +487,37 @@ fn drag_begin(app: AppHandle) {
         } else {
             let (mx, my) = (mon.position().x, mon.position().y);
             let (mw, mh) = (mon.size().width as i32, mon.size().height as i32);
-            // Nearest edge by gap, then the centre's position along that edge becomes the ratio
-            let gaps = [
-                ("left", centre.0 - mx),
-                ("right", mx + mw - centre.0),
-                ("top", centre.1 - my),
-                ("bottom", my + mh - centre.1),
-            ];
-            let (edge, _) = gaps.iter().min_by_key(|(_, g)| *g).copied().unwrap_or(("right", 0));
-            let ratio = if edge_is_horizontal(edge) {
-                (centre.0 - mx) as f64 / mw.max(1) as f64
-            } else {
-                (centre.1 - my) as f64 / mh.max(1) as f64
-            };
+            // Snap: the middle of the top, left or right edge — whichever is nearest where it was let go.
+            // Three fixed spots that scale with the screen, instead of anywhere along any edge.
+            let anchors = [("top", (mx + mw / 2, my)), ("left", (mx, my + mh / 2)), ("right", (mx + mw, my + mh / 2))];
+            let dist = |p: (i32, i32)| ((p.0 - centre.0) as f64).hypot((p.1 - centre.1) as f64);
+            let edge = anchors
+                .iter()
+                .min_by(|a, b| dist(a.1).total_cmp(&dist(b.1)))
+                .map(|a| a.0)
+                .unwrap_or("top");
             {
                 let st = app.state::<AppState>();
                 let mut c = st.cfg.lock().unwrap();
                 c.edge = edge.to_string();
-                c.notch_y = ratio.clamp(0.0, 1.0);
+                c.notch_y = 0.5;
                 c.monitor = mon_name.clone();
                 config::save(&c);
             }
-            applog(&format!("notch drag: snapped to {edge} ratio={ratio:.3} monitor={mon_name:?}"));
-            // Slide the button to the spot the handle will occupy, flush against that edge, with an
-            // ease-out — the AssistiveTouch snap. No deformation: the handle simply takes its place.
-            let along_y = (centre.1 - side / 2).clamp(my, my + (mh - side).max(0));
-            let along_x = (centre.0 - side / 2).clamp(mx, mx + (mw - side).max(0));
+            applog(&format!("notch drag: snapped to {edge} monitor={mon_name:?}"));
+            // Glide the pill into its spot and let it settle with a small overshoot — a spring's
+            // last bounce — rather than stopping dead
             let target = match edge {
-                "left" => (mx, along_y),
-                "top" => (along_x, my),
-                "bottom" => (along_x, my + mh - side),
-                _ => (mx + mw - side, along_y),
+                "left" => (mx, my + (mh - dh) / 2),
+                "right" => (mx + mw - dw, my + (mh - dh) / 2),
+                _ => (mx + (mw - dw) / 2, my),
             };
-            const STEPS: i32 = 16;
+            const STEPS: i32 = 22;
             for i in 1..=STEPS {
                 let t = i as f64 / STEPS as f64;
-                let e = 1.0 - (1.0 - t).powi(3);
+                // easeOutBack, gentle: overshoots a few percent and comes back
+                let (c1, c3) = (1.2, 2.2);
+                let e = 1.0 + c3 * (t - 1.0).powi(3) + c1 * (t - 1.0).powi(2);
                 let x = last.0 as f64 + (target.0 - last.0) as f64 * e;
                 let y = last.1 as f64 + (target.1 - last.1) as f64 * e;
                 let _ = w.set_position(tauri::PhysicalPosition::new(x.round() as i32, y.round() as i32));
@@ -1104,6 +1155,7 @@ fn main() {
             notch_expand,
             notch_peek,
             save_layout,
+            set_pref,
             settings::save_deepseek_key,
             settings::remove_deepseek_key,
             settings::open_settings,

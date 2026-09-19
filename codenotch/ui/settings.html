@@ -109,8 +109,12 @@
     <label for="theme">Theme</label>
     <div class="field">
       <select id="theme">
-        <option value="dark">Dark</option>
+        <option value="midnight">Midnight</option>
         <option value="graphite">Graphite</option>
+        <option value="ocean">Ocean</option>
+        <option value="sunset">Sunset</option>
+        <option value="forest">Forest</option>
+        <option value="rose">Rose</option>
         <option value="glass">Glass (see-through)</option>
       </select>
     </div>
@@ -487,7 +491,7 @@ if(window.__openSection) openSection(window.__openSection);
 // ---- Providers & layout: order, visibility, theme — saved on every change ----
 const PROVIDERS = [['claude','Claude'],['codex','Codex'],['cursor','Cursor'],['gemini','Antigravity'],
   ['commandcode','Command Code'],['router9','9Router'],['deepseek','DeepSeek']];
-let layout = {order: PROVIDERS.map(p => p[0]), hidden: [], theme: 'dark'};
+let layout = {order: PROVIDERS.map(p => p[0]), hidden: [], theme: 'midnight'};
 function orderedIds(order){
   const known = PROVIDERS.map(p => p[0]);
   return [...order.filter(id => known.includes(id)), ...known.filter(id => !order.includes(id))];
@@ -524,7 +528,7 @@ async function saveLayout(){
 }
 $('theme').onchange = e => { layout.theme = e.target.value; saveLayout(); };
 invoke('get_config').then(c => {
-  layout = {order: orderedIds(c.provider_order || []), hidden: c.hidden_providers || [], theme: c.theme || 'dark'};
+  layout = {order: orderedIds(c.provider_order || []), hidden: c.hidden_providers || [], theme: (!c.theme || c.theme === 'dark') ? 'midnight' : c.theme};
   renderLayout();
 }).catch(() => renderLayout());
 

@@ -64,7 +64,7 @@ pub struct Config {
 }
 
 fn default_theme() -> String {
-    "dark".into()
+    "midnight".into()
 }
 
 fn default_true() -> bool {
