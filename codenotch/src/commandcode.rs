@@ -602,7 +602,8 @@ mod tests {
 
         let two = super::compose(vec![group("a", 0.4), group("b", 0.7)], 2, 0);
         assert_eq!(two.groups.len(), 2);
-        assert!((two.windows[0].used - 0.7).abs() < 1e-9, "the ring shows the tightest account");
+        // Several keys are used in turn: the ring follows the account with the most left
+        assert!((two.windows[0].used - 0.4).abs() < 1e-9, "the ring follows the account with the most left");
 
         let rejected = super::compose(vec![group("a", 0.0), group("b", 0.0)], 0, 2);
         assert_eq!(rejected.status, "needsAuth");
