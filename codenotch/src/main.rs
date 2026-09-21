@@ -27,7 +27,7 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
 
 /// Hand-bumped build tag, written to run.log at startup so a log can always be matched to the exe that wrote it.
-pub const BUILD: &str = "r43";
+pub const BUILD: &str = "r44";
 /// The notch window, logical px (mirrored in ui/notch.html, WIN). The approach Bloom uses
 /// (github.com/sehajveersingh2005/bloom): the window keeps one size per edge and never resizes while
 /// the island animates. The island is an element inside it that springs between shapes, and the

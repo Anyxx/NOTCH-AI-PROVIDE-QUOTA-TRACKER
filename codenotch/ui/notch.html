@@ -758,7 +758,7 @@ function cardHtml(p){
   }else if(p.id==='deepseek'){
     html+=renderDeepseek(snap);
   }else if(grouped){
-    html+=`<div class="c-sub">Quota left per account</div>`+renderGroups(snap.groups);
+    html+=`<div class="c-sub">Quota left per account · the ring follows the account with the most left</div>`+renderGroups(snap.groups);
     if(snap.note) html+=`<div class="c-note">${esc(snap.note)}</div>`;
     if(p.id==='router9') html+=`<div class="foot" style="margin-top:10px"><button class="btn" data-act="tab-r9">⏻ Manage connections</button></div>`;
   }else if(!snap.windows.length){
@@ -853,7 +853,7 @@ function loadConns(){
 }
 function r9Html(){
   let h='';
-  if(r9Snap.groups&&r9Snap.groups.length) h+=`<div class="sec"><h4>Quota left per account</h4>${renderGroups(r9Snap.groups)}</div>`;
+  if(r9Snap.groups&&r9Snap.groups.length) h+=`<div class="sec"><h4>Quota left per account</h4><div class="c-sub">The ring follows the account with the most left for each quota — 9Router moves on to it when one runs out.</div>${renderGroups(r9Snap.groups)}</div>`;
   h+=`<div class="sec"><h4>Connections</h4>`;
   if(conns==null){ h+=`<div class="c-note">${connsErr?esc(connsErr):'Loading…'}</div>`; if(!connsErr) loadConns(); }
   else if(!conns.length) h+=`<div class="c-note">No connections in 9Router yet.</div>`;

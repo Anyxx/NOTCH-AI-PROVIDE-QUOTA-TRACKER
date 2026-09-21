@@ -726,25 +726,36 @@ fn cached_groups() -> Vec<QuotaGroup> {
     ACCOUNTS.lock().unwrap().iter().map(|a| a.group.clone()).collect()
 }
 
-/// The ring shows the one quota that will stop you first, across every account (Command Code's
-/// multi-account card uses it too)
+/// The ring for several accounts (9Router's Quota Tracker, and Command Code's multi-account card).
+/// It used to show the single tightest quota across every account, so one exhausted account turned
+/// the ring red at 99 % while the others still had plenty — yet 9Router falls back to the next
+/// account on its own, and several Command Code keys are used in turn. So each kind of quota (same
+/// provider, same quota name) is represented by the account with the most left, and the ring shows
+/// the tightest of those: it only fills up once every account is running out of that quota. The
+/// card still lists each account on its own.
 pub fn headline(groups: &[QuotaGroup]) -> Option<LimitWindow> {
-    let mut best: Option<(&QuotaGroup, &LimitWindow)> = None;
+    let mut best_per_kind: Vec<(String, &QuotaGroup, &LimitWindow)> = Vec::new();
     for g in groups {
         for r in &g.rows {
-            if best.map(|(_, b)| r.used > b.used).unwrap_or(true) {
-                best = Some((g, r));
+            let kind = format!("{}|{}", g.provider, if r.label.is_empty() { &r.id } else { &r.label });
+            match best_per_kind.iter_mut().find(|(k, _, _)| *k == kind) {
+                Some(entry) if r.used < entry.2.used => *entry = (kind, g, r),
+                Some(_) => {}
+                None => best_per_kind.push((kind, g, r)),
             }
         }
     }
-    best.map(|(g, r)| LimitWindow {
-        id: "tightest".into(),
-        label: format!("{} · {}", g.title, r.label),
-        used: r.used,
-        resets_at: r.resets_at,
-        amount: r.amount.clone(),
-        ..Default::default()
-    })
+    best_per_kind
+        .into_iter()
+        .max_by(|a, b| a.2.used.total_cmp(&b.2.used))
+        .map(|(_, g, r)| LimitWindow {
+            id: "tightest".into(),
+            label: format!("{} · {}", g.title, r.label),
+            used: r.used,
+            resets_at: r.resets_at,
+            amount: r.amount.clone(),
+            ..Default::default()
+        })
 }
 
 // ---------------- Putting it together ----------------
@@ -1030,6 +1041,25 @@ mod tests {
         assert_eq!(g.rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["gemini_weekly"]);
         let h = super::headline(&[g]).unwrap();
         assert!(h.label.ends_with("Gemini (Weekly)"));
+    }
+
+    #[test]
+    fn the_ring_follows_the_account_with_the_most_left_per_quota() {
+        let row = |label: &str, used: f64| super::LimitWindow { id: label.into(), label: label.into(), used, ..Default::default() };
+        let acct = |name: &str, gemini: f64, claude: f64| super::QuotaGroup {
+            provider: "antigravity".into(),
+            title: "Antigravity".into(),
+            account: name.into(),
+            rows: vec![row("Gemini (Flash / Pro)", gemini), row("Claude (Sonnet / Opus)", claude)],
+            ..Default::default()
+        };
+        // one account out of Gemini, the other with plenty: the ring is not 99 %
+        let h = super::headline(&[acct("a", 0.99, 0.0), acct("b", 0.02, 0.0)]).unwrap();
+        assert!((h.used - 0.02).abs() < 1e-9);
+        // every account low on a quota: now it shows
+        let h = super::headline(&[acct("a", 0.99, 0.10), acct("b", 0.97, 0.20)]).unwrap();
+        assert!((h.used - 0.97).abs() < 1e-9);
+        assert!(h.label.ends_with("Gemini (Flash / Pro)"));
     }
 
     #[test]
