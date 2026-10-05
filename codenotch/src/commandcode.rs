@@ -35,8 +35,32 @@ const MAX_BLOB: usize = 2560;
 
 static REFRESH: AtomicBool = AtomicBool::new(false);
 static BACKOFF_UNTIL: AtomicU64 = AtomicU64::new(0);
-/// Last reading per account id, so a failed read keeps showing what was last known
-static LAST: Mutex<Vec<(String, QuotaGroup)>> = Mutex::new(Vec::new());
+/// How the last read of an account went. A failed account keeps the rows it last had — it is retried
+/// on its own, not dropped from the card.
+#[derive(Clone, Copy, PartialEq)]
+enum Health {
+    Ok,
+    Rejected,
+    Failed,
+}
+
+/// One account's standing: what to show, how the last read went, when it is next due, and how many
+/// failures in a row (each one pushes the next attempt further out).
+struct Slot {
+    id: String,
+    group: QuotaGroup,
+    health: Health,
+    next_at: u64,
+    fails: u32,
+}
+static SLOTS: Mutex<Vec<Slot>> = Mutex::new(Vec::new());
+
+/// A healthy account is re-read every POLL_SECS; a failed one comes back in 20 s, then 40, 80 … up to
+/// the normal interval, so one account the network drops is not missing for a whole cycle. Command
+/// Code's API is slow enough that four at a time with a 10 s timeout beats reading them one by one.
+const RETRY_FIRST_SECS: u64 = 20;
+const MAX_PARALLEL: usize = 4;
+const TICK_SECS: u64 = 5;
 
 pub fn request_refresh() {
     REFRESH.store(true, Ordering::Relaxed);
@@ -248,7 +272,7 @@ fn get(url: &str, token: &str) -> Result<serde_json::Value, FetchErr> {
         .set("Accept", "application/json")
         .set("User-Agent", "command-code-desktop")
         .set("x-command-code-version", "desktop")
-        .timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(10))
         .call();
     match resp {
         Ok(r) => r.into_json().map_err(|e| FetchErr::Other(format!("parse: {e}"))),
@@ -429,84 +453,102 @@ fn compose(mut groups: Vec<QuotaGroup>, ok: usize, rejected: usize) -> UsageSnap
     snap
 }
 
-fn read_once() -> UsageSnapshot {
-    let held_until = BACKOFF_UNTIL.load(Ordering::Relaxed);
-    let now = now_ms();
-    if held_until > now {
-        let last: Vec<QuotaGroup> = LAST.lock().unwrap().iter().map(|(_, g)| g.clone()).collect();
-        let mut snap = compose(last, 0, 0);
-        snap.status = "stale".into();
-        snap.backoff_until = held_until;
-        snap.note = format!("Rate limited — retrying in {}s", (held_until - now) / 1000);
-        return snap;
+fn group_of(a: &Account, r: Reading) -> QuotaGroup {
+    let fallback = if a.label.is_empty() { mask_key(&a.key) } else { a.label.clone() };
+    QuotaGroup {
+        provider: "commandcode".into(),
+        title: "Command Code".into(),
+        account: r.user.unwrap_or(fallback),
+        plan: r.plan,
+        message: if r.windows.is_empty() { Some("Command Code has nothing metered on this account yet".into()) } else { None },
+        rows: r.windows,
     }
-    let accts = accounts();
-    if accts.is_empty() {
-        return UsageSnapshot {
-            status: "needsAuth".into(),
-            note: "No Command Code credential found".into(),
-            ..Default::default()
-        };
+}
+
+/// The accounts whose turn it is. An account not read yet is due at once.
+fn due_accounts(accts: &[Account], now: u64) -> Vec<usize> {
+    let slots = SLOTS.lock().unwrap();
+    accts
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| slots.iter().find(|s| s.id == a.id).map(|s| s.next_at <= now).unwrap_or(true))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Reads up to MAX_PARALLEL accounts at a time: one slow account no longer holds up the others
+fn read_batch(accts: &[&Account]) -> Vec<Result<Reading, FetchErr>> {
+    let mut out = Vec::with_capacity(accts.len());
+    for chunk in accts.chunks(MAX_PARALLEL) {
+        let results: Vec<_> = std::thread::scope(|s| {
+            let handles: Vec<_> = chunk.iter().map(|a| s.spawn(|| read_account(&a.key))).collect();
+            handles.into_iter().map(|h| h.join().unwrap_or_else(|_| Err(FetchErr::Other("read panicked".into())))).collect()
+        });
+        out.extend(results);
     }
-    let prev = std::mem::take(&mut *LAST.lock().unwrap());
+    out
+}
+
+/// Updates one account's slot from its reading, and says when to come back to it
+fn apply_result(a: &Account, res: Result<Reading, FetchErr>, now: u64) {
+    let mut slots = SLOTS.lock().unwrap();
+    let idx = slots.iter().position(|s| s.id == a.id);
+    let prev_group = idx.map(|i| slots[i].group.clone());
+    let fails = idx.map(|i| slots[i].fails).unwrap_or(0);
+    let (group, health, wait, fails) = match res {
+        Ok(r) => {
+            if let (Some(u), "saved") = (&r.user, a.source) {
+                remember_label(&a.id, u);
+            }
+            (group_of(a, r), Health::Ok, POLL_SECS, 0)
+        }
+        Err(e) => {
+            let (text, health, wait) = match e {
+                FetchErr::NeedsAuth => (
+                    "Command Code rejected this key — remove it or add a new one".to_string(),
+                    Health::Rejected,
+                    POLL_SECS,
+                ),
+                FetchErr::RateLimited(secs) => (format!("Rate limited — retrying in {secs}s"), Health::Failed, secs.max(BACKOFF_MIN_SECS)),
+                FetchErr::Other(m) => {
+                    crate::applog(&format!("commandcode: read failed for account {} ({m})", a.id));
+                    let wait = (RETRY_FIRST_SECS << fails.min(4)).min(POLL_SECS);
+                    (format!("Couldn't refresh — retrying in {wait}s"), Health::Failed, wait)
+                }
+            };
+            let mut g = prev_group.unwrap_or_else(|| QuotaGroup {
+                provider: "commandcode".into(),
+                title: "Command Code".into(),
+                account: if a.label.is_empty() { mask_key(&a.key) } else { a.label.clone() },
+                ..Default::default()
+            });
+            g.message = Some(text);
+            (g, health, wait, fails.saturating_add(1))
+        }
+    };
+    let slot = Slot { id: a.id.clone(), group, health, next_at: now + wait * 1000, fails };
+    match idx {
+        Some(i) => slots[i] = slot,
+        None => slots.push(slot),
+    }
+}
+
+/// The card as it stands: every account in order, with whatever each last had
+fn snapshot_now(accts: &[Account]) -> UsageSnapshot {
+    let slots = SLOTS.lock().unwrap();
+    let mut groups = Vec::new();
     let (mut ok, mut rejected) = (0usize, 0usize);
-    let mut next: Vec<(String, QuotaGroup)> = Vec::new();
-    for a in &accts {
-        let fallback_label = if a.label.is_empty() { mask_key(&a.key) } else { a.label.clone() };
-        let group = match read_account(&a.key) {
-            Ok(r) => {
-                ok += 1;
-                if let (Some(u), "saved") = (&r.user, a.source) {
-                    remember_label(&a.id, u);
-                }
-                QuotaGroup {
-                    provider: "commandcode".into(),
-                    title: "Command Code".into(),
-                    account: r.user.unwrap_or(fallback_label),
-                    plan: r.plan,
-                    message: if r.windows.is_empty() { Some("Command Code has nothing metered on this account yet".into()) } else { None },
-                    rows: r.windows,
-                }
+    for a in accts {
+        if let Some(s) = slots.iter().find(|s| s.id == a.id) {
+            match s.health {
+                Health::Ok => ok += 1,
+                Health::Rejected => rejected += 1,
+                Health::Failed => {}
             }
-            Err(e) => {
-                let message = match e {
-                    FetchErr::NeedsAuth => {
-                        rejected += 1;
-                        "Command Code rejected this key — remove it or add a new one".to_string()
-                    }
-                    FetchErr::RateLimited(secs) => {
-                        BACKOFF_UNTIL.fetch_max(now_ms() + secs * 1000, Ordering::Relaxed);
-                        format!("Rate limited — retrying in {secs}s")
-                    }
-                    FetchErr::Other(m) => {
-                        crate::applog(&format!("commandcode: read failed for account {} ({m})", a.id));
-                        m
-                    }
-                };
-                let mut g = prev
-                    .iter()
-                    .find(|(id, _)| *id == a.id)
-                    .map(|(_, g)| g.clone())
-                    .unwrap_or_else(|| QuotaGroup {
-                        provider: "commandcode".into(),
-                        title: "Command Code".into(),
-                        account: fallback_label,
-                        ..Default::default()
-                    });
-                g.message = Some(message);
-                g
-            }
-        };
-        next.push((a.id.clone(), group));
+            groups.push(s.group.clone());
+        }
     }
-    let groups: Vec<QuotaGroup> = next.iter().map(|(_, g)| g.clone()).collect();
-    *LAST.lock().unwrap() = next;
-    let mut snap = compose(groups, ok, rejected);
-    let held = BACKOFF_UNTIL.load(Ordering::Relaxed);
-    if held > now_ms() {
-        snap.backoff_until = held;
-    }
-    snap
+    compose(groups, ok, rejected)
 }
 
 fn broadcast(app: &AppHandle, snap: UsageSnapshot) {
@@ -523,30 +565,35 @@ pub fn start(app: AppHandle) {
             let snap = st.commandcode.lock().unwrap().clone();
             let _ = app.emit("commandcode", &snap);
         }
-        if !present() {
-            broadcast(&app, UsageSnapshot { status: "absent".into(), ..Default::default() });
-            loop {
-                for _ in 0..600 {
-                    if REFRESH.swap(false, Ordering::Relaxed) {
-                        break;
-                    }
-                    std::thread::sleep(Duration::from_secs(1));
-                }
-                if present() {
-                    break;
-                }
-            }
-        }
         loop {
-            let snap = read_once();
-            let hold = snap.backoff_until.saturating_sub(now_ms()) / 1000;
-            broadcast(&app, snap);
-            for _ in 0..POLL_SECS.max(hold) {
-                if REFRESH.swap(false, Ordering::Relaxed) {
-                    break;
-                }
-                std::thread::sleep(Duration::from_secs(1));
+            let forced = REFRESH.swap(false, Ordering::Relaxed);
+            let accts = accounts();
+            if accts.is_empty() {
+                SLOTS.lock().unwrap().clear();
+                // Command Code installed but without a key: say so, rather than hiding the cell
+                let snap = if present() {
+                    UsageSnapshot { status: "needsAuth".into(), note: "No Command Code API key found".into(), ..Default::default() }
+                } else {
+                    UsageSnapshot { status: "absent".into(), ..Default::default() }
+                };
+                broadcast(&app, snap);
+                std::thread::sleep(Duration::from_secs(TICK_SECS));
+                continue;
             }
+            // Accounts removed in the settings window leave with their slot
+            SLOTS.lock().unwrap().retain(|s| accts.iter().any(|a| a.id == s.id));
+            let now = now_ms();
+            let due: Vec<usize> = if forced { (0..accts.len()).collect() } else { due_accounts(&accts, now) };
+            if !due.is_empty() {
+                let batch: Vec<&Account> = due.iter().map(|i| &accts[*i]).collect();
+                let results = read_batch(&batch);
+                let now = now_ms();
+                for (a, res) in batch.into_iter().zip(results) {
+                    apply_result(a, res, now);
+                }
+                broadcast(&app, snapshot_now(&accts));
+            }
+            std::thread::sleep(Duration::from_secs(TICK_SECS));
         }
     });
 }
