@@ -27,7 +27,7 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
 
 /// Hand-bumped build tag, written to run.log at startup so a log can always be matched to the exe that wrote it.
-pub const BUILD: &str = "r44";
+pub const BUILD: &str = "r45";
 /// The notch window, logical px (mirrored in ui/notch.html, WIN). The approach Bloom uses
 /// (github.com/sehajveersingh2005/bloom): the window keeps one size per edge and never resizes while
 /// the island animates. The island is an element inside it that springs between shapes, and the
@@ -1143,6 +1143,55 @@ fn report(r: Result<String, String>) {
     let _ = std::fs::write(log, &msg);
 }
 
+/// Set once the window is up and the pollers are running (see the end of setup).
+static SETUP_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Milliseconds since Windows booted
+#[cfg(windows)]
+fn uptime_ms() -> u64 {
+    unsafe { windows::Win32::System::SystemInformation::GetTickCount64() }
+}
+#[cfg(not(windows))]
+fn uptime_ms() -> u64 {
+    u64::MAX
+}
+
+/// Autostart runs Codenotch while Windows is still waking up, and it was once found alive for two
+/// weeks having never finished starting: no window, no readings, the notch quietly showing a
+/// fortnight-old card. So the boot launch waits for the desktop to settle, and if setup still has
+/// not finished a minute and a half in, the process restarts itself once (through a short shell
+/// delay, since the single-instance guard would turn away a copy started while this one lives).
+fn start_startup_watchdog() {
+    if uptime_ms() < 120_000 {
+        applog("startup: launched during boot — waiting 20s for the desktop to settle");
+        std::thread::sleep(std::time::Duration::from_secs(20));
+    }
+    let relaunched = std::env::var_os("CODENOTCH_RELAUNCHED").is_some();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(90));
+        if SETUP_DONE.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+        applog(&format!("startup: still not up after 90s (relaunched={relaunched}) — quitting"));
+        if !relaunched {
+            if let Some(exe) = std::env::current_exe().ok().and_then(|p| p.to_str().map(String::from)) {
+                let mut cmd = std::process::Command::new("cmd");
+                // One argument: cmd joins separate ones with spaces, which would break the quoting
+                let line = format!("ping -n 5 127.0.0.1 >nul & start \"\" \"{exe}\"");
+                cmd.args(["/C", &line]).env("CODENOTCH_RELAUNCHED", "1");
+                #[cfg(windows)]
+                {
+                    use std::os::windows::process::CommandExt;
+                    cmd.creation_flags(0x0800_0000);
+                }
+                let _ = cmd.spawn();
+                applog("startup: a fresh instance will start in a few seconds");
+            }
+        }
+        std::process::exit(1);
+    });
+}
+
 fn main() {
     attach_console();
     let args: Vec<String> = std::env::args().collect();
@@ -1179,6 +1228,7 @@ fn main() {
     let cfg = config::load();
     let port = cfg.port;
 
+    start_startup_watchdog();
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             // Launching a freshly built exe while the old one is still running lands here: the new
@@ -1296,6 +1346,8 @@ fn main() {
                 let c = st.cfg.lock().unwrap();
                 config::save(&c);
             }
+            SETUP_DONE.store(true, std::sync::atomic::Ordering::Relaxed);
+            applog("startup: window up, pollers running");
             Ok(())
         })
         .run(tauri::generate_context!())
